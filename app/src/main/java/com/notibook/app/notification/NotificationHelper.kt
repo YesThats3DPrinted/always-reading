@@ -4,7 +4,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
+import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -17,10 +17,6 @@ import com.notibook.app.data.db.SentenceEntity
 object NotificationHelper {
 
     fun notificationId(bookId: Long): Int = bookId.toInt()
-
-    private val PURPLE     = Color.parseColor("#6650A4")
-    private val WHITE_FULL = Color.WHITE
-    private val WHITE_DIM  = Color.argb(80, 255, 255, 255)
 
     // ── Public entry points ──────────────────────────────────────────────────
 
@@ -66,8 +62,6 @@ object NotificationHelper {
 
         return NotificationCompat.Builder(context, NotiBookApp.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_book)
-            .setColor(PURPLE)
-            .setColorized(true)
             .setCustomContentView(collapsed)
             .setCustomBigContentView(expanded)
             // No setContentIntent — only explicit per-view clicks open the app,
@@ -89,7 +83,6 @@ object NotificationHelper {
         isFirst: Boolean,
         isLast: Boolean
     ): RemoteViews = RemoteViews(context.packageName, R.layout.notification_collapsed).apply {
-        setInt(R.id.notif_root_collapsed, "setBackgroundColor", PURPLE)
         setTextViewText(R.id.tv_notification_title, titleText)
         setTextViewText(R.id.tv_sentence, sentenceText)
         setOnClickPendingIntent(R.id.tv_notification_title, makeOpenAppIntent(context))
@@ -104,7 +97,6 @@ object NotificationHelper {
         isFirst: Boolean,
         isLast: Boolean
     ): RemoteViews = RemoteViews(context.packageName, R.layout.notification_expanded).apply {
-        setInt(R.id.notif_root_expanded, "setBackgroundColor", PURPLE)
         setTextViewText(R.id.tv_notification_title, titleText)
         setTextViewText(R.id.tv_sentence, sentenceText)
         setOnClickPendingIntent(R.id.tv_notification_title, makeOpenAppIntent(context))
@@ -117,19 +109,20 @@ object NotificationHelper {
         isFirst: Boolean,
         isLast: Boolean
     ) {
+        // Hide the arrow when already at the boundary; show and wire it otherwise.
         if (isFirst) {
-            setInt(R.id.btn_prev, "setTextColor", WHITE_DIM)
+            setViewVisibility(R.id.btn_prev, View.INVISIBLE)
         } else {
-            setInt(R.id.btn_prev, "setTextColor", WHITE_FULL)
+            setViewVisibility(R.id.btn_prev, View.VISIBLE)
             setOnClickPendingIntent(
                 R.id.btn_prev,
                 makeBroadcast(context, NotificationActionReceiver.ACTION_PREV, bookId)
             )
         }
         if (isLast) {
-            setInt(R.id.btn_next, "setTextColor", WHITE_DIM)
+            setViewVisibility(R.id.btn_next, View.INVISIBLE)
         } else {
-            setInt(R.id.btn_next, "setTextColor", WHITE_FULL)
+            setViewVisibility(R.id.btn_next, View.VISIBLE)
             setOnClickPendingIntent(
                 R.id.btn_next,
                 makeBroadcast(context, NotificationActionReceiver.ACTION_NEXT, bookId)

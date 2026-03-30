@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Collapsed (small) notification.
-     The sentence text is clipped at a fixed FrameLayout height with a gradient fade
-     at the bottom — this signals to the user that there is more text and the
-     notification can be expanded by swiping down.
-     Background set at runtime via setInt("setBackgroundColor"). -->
+     The sentence text is clipped at a fixed FrameLayout height.
+     No hardcoded colors — Android applies the correct text/background colors
+     for the device theme (light or dark mode) automatically. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/notif_root_collapsed"
     android:layout_width="match_parent"
@@ -26,7 +25,6 @@
             android:layout_weight="1"
             android:gravity="center"
             android:text="←"
-            android:textColor="#AAFFFFFF"
             android:textSize="18sp" />
 
         <TextView
@@ -37,7 +35,6 @@
             android:ellipsize="end"
             android:gravity="center_vertical"
             android:maxLines="1"
-            android:textColor="#FFFFFFFF"
             android:textSize="11sp"
             android:textStyle="bold" />
 
@@ -48,14 +45,11 @@
             android:layout_weight="1"
             android:gravity="center"
             android:text="→"
-            android:textColor="#AAFFFFFF"
             android:textSize="18sp" />
 
     </LinearLayout>
 
-    <!-- Sentence preview clipped to 64dp.
-         A 32dp gradient overlay at the bottom fades the text to purple,
-         clearly indicating the notification can be expanded. -->
+    <!-- Sentence preview clipped to 64dp. -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="64dp"
@@ -68,17 +62,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:lineSpacingMultiplier="1.3"
-            android:textColor="#FFFFFFFF"
             android:textSize="15sp" />
-
-        <!-- Gradient fade — transparent at top, solid purple at bottom.
-             Declared after tv_sentence so it renders on top of the text. -->
-        <TextView
-            android:id="@+id/fade_overlay"
-            android:layout_width="match_parent"
-            android:layout_height="32dp"
-            android:layout_gravity="bottom"
-            android:background="@drawable/notif_bottom_fade" />
 
     </FrameLayout>
 
