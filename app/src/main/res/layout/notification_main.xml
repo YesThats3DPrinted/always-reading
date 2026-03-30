@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Single-state notification layout — no separate expanded view.
+     The root has NO android:background set in XML; the background colour is applied
+     at runtime via RemoteViews.setInt(R.id.notif_root, "setBackgroundColor", …)
+     so MIUI's XML-attribute override cannot strip it.
+     The system notification card clips this view to its own rounded corners, so the
+     result is a properly rounded, fully-purple card on all launchers. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/notif_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="14dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="4dp">
+
+    <!-- Title row: Book · Chapter · X%  and  ✕ dismiss button -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/tv_notification_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_toStartOf="@+id/btn_dismiss"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="#FFFFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <!-- ✕ in the top-right corner — cancels the notification and turns off the toggle -->
+        <TextView
+            android:id="@+id/btn_dismiss"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_alignParentEnd="true"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#CCFFFFFF"
+            android:textSize="14sp" />
+
+    </RelativeLayout>
+
+    <!-- Sentence text — expands to full height, never truncated -->
+    <TextView
+        android:id="@+id/tv_sentence"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:lineSpacingMultiplier="1.3"
+        android:textColor="#FFFFFFFF"
+        android:textSize="15sp" />
+
+    <!-- Navigation row: tap left half = previous, tap right half = next -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btn_prev"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="start|center_vertical"
+            android:text="←"
+            android:textColor="#AAFFFFFF"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/btn_next"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="end|center_vertical"
+            android:text="→"
+            android:textColor="#AAFFFFFF"
+            android:textSize="18sp" />
+
+    </LinearLayout>
+
+</LinearLayout>
