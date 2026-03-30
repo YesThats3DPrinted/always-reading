@@ -17,7 +17,7 @@ import kotlin.math.roundToInt
  */
 object SentenceSplitter {
 
-    private const val MAX_CHUNK_CHARS = 250
+    private const val MAX_CHUNK_CHARS = 200
 
     /**
      * Known abbreviations whose trailing period must NOT be treated as a sentence end.
