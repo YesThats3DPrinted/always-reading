@@ -6,24 +6,29 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /**
- * Splits a block of plain text into individual sentences using Android's ICU-backed
- * BreakIterator, then merges any segment that ends with a known abbreviation into the
- * next segment (so "Mr. Smith" doesn't become two sentences). Any segment that still
- * exceeds MAX_CHUNK_CHARS is divided into N equal-length chunks split at word boundaries.
+ * Splits a block of plain text into display segments using Android's ICU-backed
+ * BreakIterator, then merges any false sentence boundaries caused by abbreviations,
+ * numbers, or Roman numerals before chunking long segments into equal-sized pieces.
+ *
+ * Design principle: always err on the side of merging rather than splitting.
+ * Accidentally merging two sentences produces one slightly longer segment that the
+ * equal-chunk algorithm handles gracefully. Accidentally splitting mid-sentence
+ * interrupts the reading flow and is far more disruptive.
  */
 object SentenceSplitter {
 
     private const val MAX_CHUNK_CHARS = 250
 
     /**
-     * Abbreviations whose trailing period should NOT be treated as a sentence boundary.
-     * Stored without the final period so we can match against `sentence.dropLast(1).lastWord()`.
+     * Known abbreviations whose trailing period must NOT be treated as a sentence end.
+     * Stored without the final period; matched against the last whitespace-delimited
+     * token of a raw BreakIterator segment (lowercased).
      */
     private val ABBREVIATIONS = setOf(
         // Titles & honorifics
         "mr", "mrs", "ms", "miss", "dr", "prof", "rev", "hon", "sen", "rep",
         "gen", "capt", "lt", "sgt", "cpl", "pvt", "insp", "pres", "gov", "supt", "sr", "jr",
-        // Academic degrees (multi-part stored as last segment, e.g. "ph.d" → lastWord = "ph.d")
+        // Academic degrees
         "ph.d", "m.d", "b.a", "m.a", "b.sc", "m.sc", "ll.d", "ed.d",
         // Latin & common writing
         "e.g", "i.e", "etc", "et al", "vs", "cf", "viz", "al", "ca",
@@ -35,13 +40,36 @@ object SentenceSplitter {
         // Geography / addresses
         "st", "ave", "blvd", "rd", "ln", "ct", "pl", "mt", "ft", "u.s", "u.k", "u.n",
         // Business / legal
-        "inc", "ltd", "corp", "co", "llc", "bros"
+        "inc", "ltd", "corp", "co", "llc", "bros", "v", "art", "cl",
+        // Era / historical
+        "b.c", "a.d", "b.c.e", "c.e",
+        // Units of measurement
+        "km", "cm", "mm", "m", "kg", "g", "mg", "l", "ml",
+        "oz", "lb", "lbs", "ft", "yd", "mi", "mph", "approx", "max", "min", "avg",
+        // Compass directions
+        "n", "s", "e", "w", "ne", "nw", "se", "sw",
+        // Professional / organisational
+        "dept", "div", "est", "mgr", "dir", "asst", "assoc", "admin",
+        "natl", "intl", "govt"
     )
+
+    /**
+     * Matches valid Roman numerals (I–MMMCMXCIX), case-insensitive.
+     * Used to detect e.g. "III." or "XII." as non-sentence-ending tokens.
+     * A proper regex avoids false positives on ordinary words that happen to
+     * contain only the letters I, V, X, L, C, D, M (e.g. "mild", "mixed").
+     */
+    private val ROMAN_NUMERAL_RE = Regex(
+        "^m{0,4}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$",
+        RegexOption.IGNORE_CASE
+    )
+
+    // ── Public API ────────────────────────────────────────────────────────────
 
     fun split(text: String): List<String> {
         if (text.isBlank()) return emptyList()
 
-        // 1. Get raw sentence boundaries from ICU BreakIterator
+        // 1. Raw sentence boundaries from ICU BreakIterator
         val iter = BreakIterator.getSentenceInstance(Locale.getDefault())
         iter.setText(text)
         val raw = mutableListOf<String>()
@@ -54,14 +82,14 @@ object SentenceSplitter {
             end = iter.next()
         }
 
-        // 2. Merge any sentence that ends with a known abbreviation into the next one.
-        //    e.g. BreakIterator may split "He spoke to Mr." | "Smith yesterday."
-        //    → merged into "He spoke to Mr. Smith yesterday."
+        // 2. Merge segments where the boundary is a false positive.
+        //    Covers abbreviations (Mr., Dr., etc.), any number (1., 03., 1995.),
+        //    and Roman numerals (I., III., XII.).
         val merged = mutableListOf<String>()
         var i = 0
         while (i < raw.size) {
             var current = raw[i]
-            while (i + 1 < raw.size && endsWithAbbreviation(current)) {
+            while (i + 1 < raw.size && isFalseBoundary(current)) {
                 i++
                 current = "$current ${raw[i]}"
             }
@@ -73,21 +101,29 @@ object SentenceSplitter {
         return merged.flatMap { chunkIfNeeded(it) }
     }
 
+    // ── Boundary detection ────────────────────────────────────────────────────
+
     /**
-     * Returns true if [sentence] ends with a period that belongs to a known abbreviation
-     * rather than a genuine sentence terminator.
+     * Returns true if the trailing period of [sentence] is NOT a genuine sentence
+     * terminator — i.e. the period belongs to an abbreviation, a number, or a
+     * Roman numeral.
      */
-    private fun endsWithAbbreviation(sentence: String): Boolean {
+    private fun isFalseBoundary(sentence: String): Boolean {
         val trimmed = sentence.trimEnd()
         if (!trimmed.endsWith(".")) return false
-        // Drop the final period, take the last whitespace-delimited token, lowercase it
-        val lastWord = trimmed.dropLast(1).trimEnd().substringAfterLast(' ').lowercase()
-        return lastWord in ABBREVIATIONS
+        // Last whitespace-delimited token before the period
+        val lastWord = trimmed.dropLast(1).trimEnd().substringAfterLast(' ')
+        val lower = lastWord.lowercase()
+        return lower in ABBREVIATIONS                          // known abbreviation
+            || lastWord.all { it.isDigit() }                  // any integer: 1, 03, 1995
+            || ROMAN_NUMERAL_RE.matches(lastWord)             // Roman numeral: III, XII, MCMXCIX
     }
+
+    // ── Chunking ──────────────────────────────────────────────────────────────
 
     /**
      * If [text] fits within MAX_CHUNK_CHARS, returns it as-is.
-     * Otherwise divides it into N ≈ equal chunks, each split at a word boundary.
+     * Otherwise divides it into N ≈ equal chunks split at word boundaries.
      * All but the last chunk get a trailing " …" to signal continuation.
      */
     private fun chunkIfNeeded(text: String): List<String> {

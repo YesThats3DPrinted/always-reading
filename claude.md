@@ -6,7 +6,7 @@
 
 **Supported formats:** EPUB, TXT
 **Target devices:** Android 7+ (API 24+)
-**Notification behavior:** Custom RemoteViews, no foreground service
+**Notification behavior:** Custom RemoteViews (expanded view only), no foreground service
 
 ---
 
@@ -19,12 +19,12 @@
    - `NotificationActionReceiver.kt` — handles navigation (← →), dismiss, snooze via BroadcastReceiver with `goAsync()` + coroutines
    - `BootReceiver.kt` — restores active notifications on device boot
    - `SnoozeAlarmReceiver.kt` — fires snooze alarms set by user
-   - `NotificationService.kt` — empty stub (removed foreground service entirely)
+   - `NotificationService.kt` — empty stub (foreground service removed entirely)
 
 2. **Book Parsing** (`parsing/`)
    - `EpubParser.kt` — extracts text from EPUB files, respects `<p>` paragraph boundaries
    - `TxtParser.kt` — reads TXT files, splits on `\n{2,}` for paragraphs
-   - `SentenceSplitter.kt` — uses ICU `BreakIterator` for sentence splitting, then **equal-chunk splitting** for long sentences
+   - `SentenceSplitter.kt` — ICU BreakIterator + abbreviation/number merging + equal-chunk splitting
    - `ParseWorker.kt` — WorkManager task for async parsing without blocking UI
 
 3. **Database** (`data/db/`)
@@ -34,7 +34,7 @@
 
 4. **UI** (`ui/`)
    - Jetpack Compose for main app (library and detail screens)
-   - `BookDetailScreen` — displays current sentence, jump controls, import/remove buttons
+   - `BookDetailScreen` — displays current sentence, notification toggle, restart/remove
    - `BookDetailViewModel` — manages UI state, calls notification system directly
 
 5. **App Initialization** (`NotiBookApp.kt`)
@@ -46,7 +46,7 @@
 ```
 Import Book (user clicks "Import")
 → ParseWorker parses file (EPUB/TXT)
-→ SentenceSplitter breaks into sentences + equal chunks
+→ SentenceSplitter breaks into sentences + merges abbreviations + equal chunks
 → Room DB stores all sentences
 → NotificationHelper.show() posts first sentence notification
 ↓
@@ -58,7 +58,7 @@ User taps title
 → MainActivity opens, shows current sentence detail screen
 ↓
 User dismisses notification
-→ BroadcastReceiver sets `notificationActive = false` in DB
+→ BroadcastReceiver sets notificationActive = false in DB
 ```
 
 ---
@@ -69,14 +69,14 @@ User dismisses notification
 
 **Decision:** Removed the foreground service entirely. Notifications now posted via `NotificationManagerCompat.notify()` directly.
 
-**Why:** On MIUI, foreground service notifications are force-expanded and cannot be swiped away. Removing the service allows users to:
-- Swipe away notifications
-- See both collapsed and expanded states
-- Dismiss without force-killing the app
+**Why:** On MIUI, foreground service notifications are force-expanded and cannot be swiped away. Removing the service allows:
+- Swipe-to-dismiss to work
+- Both collapsed and expanded states to be visible
+- Dismissal without force-killing the app
 
-**Trade-off:** Notifications are no longer guaranteed to persist forever (system can kill them under memory pressure), but users can re-enable via the app.
+**Trade-off:** Without a foreground service, the system can kill notifications under memory pressure. Acceptable — user can re-enable via the app.
 
-**Implementation:** All notification posting is now through `NotificationHelper.show()` which calls `NotificationManagerCompat.from(context).notify()`. BroadcastReceivers use `goAsync()` + `lifecycleScope.launch { }` for async DB work without a service.
+**Implementation:** All notification posting goes through `NotificationHelper.show()`. BroadcastReceivers use `goAsync()` + coroutines for async DB work.
 
 ---
 
@@ -86,90 +86,112 @@ User dismisses notification
 - ✅ Allowed: `FrameLayout`, `LinearLayout`, `RelativeLayout`, `GridLayout`, `TextView`, `ImageView`, `ImageButton`, `Button`, `ProgressBar`, `Chronometer`, `ListView`, `GridView`, `StackView`, `ViewFlipper`, `ViewStub`
 - ❌ Not allowed: `ScrollView`, `RecyclerView`, `WebView`, `VideoView`, custom views, etc.
 
-**Implication:** We cannot add scrolling to the expanded notification. Long sentences are clipped via `maxLines=8` + `ellipsize=end`. Users must open the app to read the full sentence if it exceeds ~8 lines.
+**Implication:** No scrolling in notifications. Long sentences are capped at `maxLines=8` + `ellipsize=end`. The equal-chunk algorithm keeps most segments short enough to avoid this.
 
-**Our layouts:**
-- `notification_collapsed.xml` — title row (← title →), FrameLayout with sentence preview (64dp fixed height, clipChildren=true), bottom fade overlay
-- `notification_expanded.xml` — same title row, larger sentence area (maxLines=8, no fixed height)
-
----
-
-### 3. Notification Background Color: MIUI vs Samsung
-
-**Research:** Examined NotiNotes GitHub repo to understand cross-device color handling.
-
-**NotiNotes approach:**
-- Uses standard notification template (`BigTextStyle`)
-- Calls `builder.createContentView()` to get the system-generated template RemoteViews
-- Sets background color on the ROOT of that template: `setInt(rootId, "setBackgroundColor", blendedColor)`
-- Works because the root of the system template IS the full notification card visible on all OEMs
-
-**Our approach:**
-- Uses fully custom RemoteViews layouts (needed for navigation arrows)
-- Sets background color on our root view: `setInt(R.id.notif_root_collapsed, "setBackgroundColor", PURPLE)`
-- **Works on MIUI:** MIUI's card chrome is transparent; our colored root fills the visible area
-- **Limited on Samsung One UI:** Samsung wraps the notification in an opaque grey card. Our custom view sits inside it. Only our inner area is purple; the card chrome remains grey.
-
-**Why we didn't adopt NotiNotes's approach:**
-- NotiNotes doesn't need navigation arrows; they use standard template + action buttons
-- Our arrows are core to the UX (quick sentence nav without opening app)
-- Moving arrows to action buttons would break the button row design
-
-**Current status:**
-- Purple background works perfectly on MIUI
-- On Samsung One UI: notification is functional but has a grey card border around the purple content
-- Using `setColorized(true)` + `setColor(PURPLE)` provides fallback coloring on some OEMs
-
-**Known limitation:** Full-bleed purple background on all OEMs is not achievable while keeping custom navigation arrows. We chose functional arrows over perfect colors.
+**Layout:**
+- `notification_expanded.xml` — title row (← title →) with rounded grey button backgrounds, sentence text below (maxLines=8)
+- No custom collapsed layout — Android's standard template handles the collapsed state with correct theming
 
 ---
 
-### 4. Equal-Chunk Splitting Algorithm
+### 3. Notification Background Color & Dark Mode
 
-**Constraint:** ICU `BreakIterator` gives us sentences, but they can be very long (e.g., 1000+ chars). Displaying such sentences in a 64dp-tall notification is illegible.
+**History of decisions:**
 
-**Old approach (greedy):** Split at 250-char boundaries, but this could leave a tiny final chunk (e.g., 2000-char sentence → 250+250+250+250+20).
+**Attempt 1 — Purple hardcoded background:**
+- Used `setInt("setBackgroundColor", PURPLE)` on root view (technique from NotiNotes GitHub repo)
+- Worked on MIUI (transparent card chrome), but Samsung One UI showed purple box inside grey card
+- NotiNotes's approach works because they use the standard template; we need custom layouts for arrows
 
-**New approach (equal-size):**
+**Attempt 2 — Removed all custom colors:**
+- Let Android handle theming automatically
+- Problem: custom RemoteViews don't inherit system notification text colors — text defaulted to black, invisible in dark mode
+
+**Current approach — Dark mode detection:**
+- `NotificationHelper` checks `Configuration.UI_MODE_NIGHT_MASK` at notification build time
+- Sets white text in dark mode, black text in light mode via `setInt("setTextColor", color)`
+- Collapsed state uses Android's standard template (no custom view) — system handles its own theming correctly
+- Expanded state uses custom view with runtime-detected colors
+
+**Key insight:** Custom RemoteViews must set text colors explicitly. Standard template notifications handle theming automatically.
+
+---
+
+### 4. Single Notification Layout (Expanded Only)
+
+**Decision:** Only one custom layout — the expanded view (`notification_expanded.xml`).
+
+**Why:** The collapsed state is handled by Android's standard template (`setContentTitle` + `setContentText`) which:
+- Automatically handles light/dark mode text colors
+- Works correctly on all OEMs including Samsung
+- No grey-card-around-purple-box issue
+
+**Trade-off:** Collapsed state has no arrows. User must expand the notification to navigate. Accepted as reasonable UX.
+
+**Notification title format:** `"0% · Book Title · Chapter"` — percentage first so it's always visible even on long titles that would otherwise be truncated.
+
+---
+
+### 5. Sentence Splitting Design Philosophy
+
+**Core principle: always err on the side of merging, never on splitting.**
+
+Accidentally merging two sentences produces one slightly longer segment, which the equal-chunk algorithm handles gracefully by splitting into balanced pieces. No reading flow is interrupted.
+
+Accidentally splitting mid-sentence (e.g. breaking on "Mr.") interrupts the reading flow and is far more disruptive to the user experience.
+
+#### Pipeline
+
 ```
-1. If sentence ≤ 250 chars: use as-is
-2. Otherwise: N = ceil(length / 250)
-3. Divide text into N equal parts: chunkSize = length / N
-4. Find word boundaries near each division point
-5. Append "…" to non-last chunks to show continuation
+Raw text
+  ↓ ICU BreakIterator (sentence boundaries)
+  ↓ Abbreviation/number/Roman numeral merging
+  ↓ Equal-chunk splitting (MAX_CHUNK_CHARS = 250)
+Final segments stored in DB
 ```
 
-**Example:** 600-char sentence → N=3 → split into 3 ~200-char chunks: "chunk1 …", "chunk2 …", "chunk3"
+#### Step 1 — BreakIterator
+ICU's `BreakIterator.getSentenceInstance()` identifies sentence boundaries.
 
-**Benefit:** Users see balanced chunks. Final chunk is not tiny.
+#### Step 2 — False boundary merging
+After BreakIterator runs, consecutive segments are merged when the first ends with:
+- **Known abbreviations:** `Mr.` `Dr.` `etc.` `e.g.` `Jan.` `Ave.` `Inc.` and ~80 others (see `ABBREVIATIONS` set in `SentenceSplitter.kt`)
+  - Categories: titles/honorifics, academic degrees, Latin, publishing, time, geography, business/legal, era (B.C./A.D.), units (km/kg/oz...), compass directions, professional terms
+- **Any integer:** `1.` `03.` `1995.` — covers ordinal numbers and European date formats like `03. III. 1995.`
+- **Roman numerals:** `I.` `III.` `XII.` `MCMXCIX.` — validated with a proper regex to avoid false matches on ordinary words (`mild`, `mixed`, etc.)
 
-**Files:** `SentenceSplitter.kt` — `chunkIfNeeded()` method
+#### Step 3 — Equal-chunk splitting
+Any segment exceeding 250 chars is divided into N equal pieces:
+- `N = ceil(length / 250)` — e.g. 900 chars → 4 chunks of ~225 each
+- Each split adjusted to the nearest word boundary
+- Non-last chunks get a trailing `" …"` to signal continuation
 
----
-
-### 5. Paragraph Boundary Support
-
-**Requirement:** Books have paragraphs (EPUB `<p>` tags, TXT blank lines). Respecting these boundaries improves readability.
-
-**Implementation:**
-- **EPUB:** `EpubParser.parseHtmlChapter()` iterates over `<p>` elements separately; falls back to full body text if no `<p>` tags
-- **TXT:** `TxtParser` splits on `\n{2,}` regex first, then sentence-splits each paragraph
-
-**Result:** Paragraph breaks become natural stopping points between sentences (a new `<p>` or double-newline ends the current sentence).
+**Note:** Re-importing books is required after any changes to the splitting logic, since parsed sentences are stored in the DB.
 
 ---
 
 ### 6. Title-Only Click Behavior
 
-**Constraint:** Early builds had accidental app opens when tapping near arrow buttons. This frustrated users during quick navigation.
+**Decision:** Only the title TextView opens the app. Tapping arrows or sentence text does nothing.
 
-**Solution:**
-- Removed global `setContentIntent()` from notification builder
-- Only `tv_notification_title` has explicit `setOnClickPendingIntent()` → opens app
-- Arrow buttons have click listeners for navigation broadcasts
-- Sentence text has no click listener (was causing accidental opens)
+**Implementation:**
+- No `setContentIntent()` on the notification builder
+- Only `setOnClickPendingIntent(R.id.tv_notification_title, ...)` opens the app
+- Arrows have their own broadcast click listeners for navigation
+- Sentence text has no click listener
 
-**Benefit:** Users can safely tap arrows or sentence text without launching the app.
+**Why:** Prevents accidental app launches when tapping near arrows during quick navigation.
+
+---
+
+### 7. Arrow Visibility at Boundaries
+
+**Decision:** Arrows become `INVISIBLE` (not `GONE`) at first/last sentence.
+
+- `INVISIBLE` hides the arrow but preserves its space → layout doesn't shift
+- `GONE` would cause the title to expand and jump — jarring UX
+- At first sentence: `btn_prev` is invisible
+- At last sentence: `btn_next` is invisible
 
 ---
 
@@ -177,86 +199,88 @@ User dismisses notification
 
 ```
 NotiBook/
-├── app/
-│   ├── src/main/
-│   │   ├── java/com/notibook/app/
-│   │   │   ├── MainActivity.kt                    # Main app activity
-│   │   │   ├── NotiBookApp.kt                     # App initialization, notification channel
-│   │   │   ├── notification/
-│   │   │   │   ├── NotificationHelper.kt          # Build & post notifications
-│   │   │   │   ├── NotificationActionReceiver.kt  # Handle ← → dismiss snooze
-│   │   │   │   ├── BootReceiver.kt                # Restore on boot
-│   │   │   │   ├── SnoozeAlarmReceiver.kt         # Snooze timer
-│   │   │   │   └── NotificationService.kt         # [empty, removed]
-│   │   │   ├── parsing/
-│   │   │   │   ├── EpubParser.kt                  # EPUB extraction
-│   │   │   │   ├── TxtParser.kt                   # TXT parsing
-│   │   │   │   ├── SentenceSplitter.kt            # Sentence + equal-chunk splitting
-│   │   │   │   └── ParseWorker.kt                 # WorkManager task
-│   │   │   ├── data/
-│   │   │   │   ├── BookRepository.kt              # DB + parser facade
-│   │   │   │   └── db/
-│   │   │   │       ├── AppDatabase.kt             # Room DB setup
-│   │   │   │       ├── BookEntity.kt              # Book data class
-│   │   │   │       ├── SentenceEntity.kt          # Sentence data class
-│   │   │   │       ├── BookDao.kt                 # Book queries
-│   │   │   │       └── SentenceDao.kt             # Sentence queries
-│   │   │   └── ui/
-│   │   │       ├── detail/
-│   │   │       │   ├── BookDetailScreen.kt        # Detail screen UI
-│   │   │       │   └── BookDetailViewModel.kt     # Detail screen state
-│   │   │       ├── library/
-│   │   │       │   ├── LibraryScreen.kt           # Library screen UI
-│   │   │       │   └── LibraryViewModel.kt        # Library screen state
-│   │   │       ├── navigation/
-│   │   │       │   └── AppNavigation.kt           # Nav graph setup
-│   │   │       └── theme/
-│   │   │           └── Theme.kt                   # Compose theme
-│   │   ├── res/
-│   │   │   ├── layout/
-│   │   │   │   ├── notification_collapsed.xml     # Small notification layout
-│   │   │   │   ├── notification_expanded.xml      # Large notification layout
-│   │   │   │   └── notification_main.xml          # [legacy, may remove]
-│   │   │   ├── drawable/
-│   │   │   │   ├── notif_bottom_fade.xml          # Gradient fade overlay (collapsed)
-│   │   │   │   ├── notif_bg_purple.xml            # [legacy]
-│   │   │   │   ├── ic_book.xml                    # Notification icon
-│   │   │   │   └── [other icons]
-│   │   │   └── values/
-│   │   │       ├── strings.xml
-│   │   │       └── themes.xml
-│   │   └── AndroidManifest.xml
-│   ├── build.gradle.kts
-│   └── ...
+├── app/src/main/
+│   ├── java/com/notibook/app/
+│   │   ├── MainActivity.kt
+│   │   ├── NotiBookApp.kt
+│   │   ├── notification/
+│   │   │   ├── NotificationHelper.kt          # Build & post; dark mode detection
+│   │   │   ├── NotificationActionReceiver.kt  # ← → dismiss snooze
+│   │   │   ├── BootReceiver.kt
+│   │   │   ├── SnoozeAlarmReceiver.kt
+│   │   │   └── NotificationService.kt         # empty stub
+│   │   ├── parsing/
+│   │   │   ├── EpubParser.kt                  # EPUB, per-<p> boundaries
+│   │   │   ├── TxtParser.kt                   # TXT, \n\n boundaries
+│   │   │   ├── SentenceSplitter.kt            # BreakIterator + merge + chunk
+│   │   │   └── ParseWorker.kt
+│   │   ├── data/
+│   │   │   ├── BookRepository.kt
+│   │   │   └── db/
+│   │   │       ├── AppDatabase.kt
+│   │   │       ├── BookEntity.kt
+│   │   │       ├── SentenceEntity.kt
+│   │   │       ├── BookDao.kt
+│   │   │       └── SentenceDao.kt
+│   │   └── ui/
+│   │       ├── detail/
+│   │       │   ├── BookDetailScreen.kt        # Notif toggle, restart, remove
+│   │       │   └── BookDetailViewModel.kt
+│   │       ├── library/
+│   │       │   ├── LibraryScreen.kt
+│   │       │   └── LibraryViewModel.kt
+│   │       ├── navigation/AppNavigation.kt
+│   │       └── theme/Theme.kt
+│   ├── res/
+│   │   ├── layout/
+│   │   │   ├── notification_expanded.xml      # Only custom layout (arrows + sentence)
+│   │   │   └── notification_collapsed.xml     # Kept but no longer used
+│   │   ├── drawable/
+│   │   │   ├── notif_btn_bg.xml               # Rounded grey bg for arrows + title
+│   │   │   ├── notif_bottom_fade.xml          # Legacy — not currently used
+│   │   │   ├── ic_book.xml
+│   │   │   └── [other icons]
+│   │   └── values/
+│   │       ├── strings.xml
+│   │       └── themes.xml
+│   └── AndroidManifest.xml
 ├── build.gradle.kts
-├── gradle/
-│── settings.gradle.kts
 ├── .gitignore
-└── claude.md                                      # This file
+└── claude.md
 ```
 
 ---
 
-## Current State & Latest Changes
+## Current State (Session 3)
 
-### Session 2 Accomplishments (Current)
+### Session 3 Changes
 
-1. **Equal-Chunk Splitting** — `SentenceSplitter.kt` rewritten to divide long sentences into N equal-sized chunks instead of greedy 250-char cuts. Non-last chunks get "…" suffix.
+1. **Dark mode text fix** — detect `UI_MODE_NIGHT_MASK` at notification build time; white text in dark mode, black in light mode applied via `setInt("setTextColor")`
 
-2. **Collapsed Notification Fade Overlay** — `notification_collapsed.xml` redesigned with:
-   - FrameLayout (64dp fixed height, `clipChildren=true`) containing sentence text + gradient fade
-   - Fade overlay: 32dp tall TextView at bottom with `notif_bottom_fade.xml` gradient (purple with transparency)
-   - Visual hint that notification can be expanded
+2. **Single layout** — removed `setCustomContentView()` (custom collapsed layout). Collapsed state now uses Android's standard template. Custom expanded view only via `setCustomBigContentView()`.
 
-3. **Title-Only Click** — `NotificationHelper.kt` updated to remove `setOnClickPendingIntent()` on sentence text. Only title opens the app.
+3. **Percentage first in title** — changed from `"Book · Chapter · 0%"` to `"0% · Book · Chapter"` so percentage is always visible even on long truncated titles
 
-4. **GitHub Repository** — Full project pushed to `https://github.com/YesThats3DPrinted/notibook` with `.gitignore` and initial commit.
+4. **Button backgrounds on notification** — added `notif_btn_bg.xml` (rounded 8dp corners, `#22808080` semi-transparent grey) applied to `btn_prev`, `btn_next`, and `tv_notification_title` to make them look tappable
 
-### Session 1 Accomplishments (Previous)
+5. **Removed jump controls** — removed "Jump to sentence" and "Jump to page" fields from `BookDetailScreen`. Will be replaced with better navigation later.
 
-- Removed foreground service entirely → swipe-to-dismiss works, both notification sizes visible
-- Purple background using `setInt("setBackgroundColor")` technique from NotiNotes
-- Notification redesign: arrows in title row, no separate nav row
+6. **Abbreviation merging in splitter** — extended `SentenceSplitter` to merge false sentence boundaries: known abbreviations (~80 terms), any integer, Roman numerals
+
+7. **Expanded abbreviation list** — added era (B.C./A.D.), units (km/kg/oz/etc.), compass directions (N/S/E/W), professional terms (dept/mgr/assoc/etc.), legal (v./art./cl.)
+
+8. **Number & Roman numeral rules** — any integer token before a period is never treated as a sentence end; Roman numerals validated with proper regex to avoid false matches on common words
+
+### Session 2 Changes (Previous)
+- Equal-chunk splitting algorithm (N = ceil/250)
+- Collapsed notification fade overlay (later removed)
+- Title-only click behavior
+- GitHub repository setup
+- Purple notification background (later removed for cross-device compatibility)
+
+### Session 1 Changes (Previous)
+- Removed foreground service → swipe-to-dismiss works
+- Notification redesign: arrows in title row
 - Equal-size navigation hit boxes (weight-based layout)
 - Paragraph boundary support (EPUB `<p>`, TXT `\n\n`)
 
@@ -264,93 +288,57 @@ NotiBook/
 
 ## Build & Test Workflow
 
-### Build APK
 ```bash
+# Build
 cd ~/Downloads/Claude\ Code/NotiBook
 ./gradlew assembleDebug
-```
-Output: `app/build/outputs/apk/debug/app-debug.apk`
 
-### Install APK
-```bash
+# Install (overwrite existing)
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
 
-### Clean Rebuild (if needed)
-```bash
+# Clean rebuild if needed
 ./gradlew clean assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+**After changing SentenceSplitter:** remove and re-import all books — parsed sentences are stored in the DB and won't be re-split automatically.
 
 ### Manual Testing Checklist
-- [ ] Import a book (EPUB or TXT)
-- [ ] Notification appears with purple background
-- [ ] Collapsed notification: title + sentence preview + fade hint at bottom
-- [ ] Expand notification: full sentence visible
-- [ ] Tap ← : previous sentence (greyed out if first)
-- [ ] Tap → : next sentence (greyed out if last)
-- [ ] Tap title: app opens to detail screen
-- [ ] Tap sentence text: nothing happens (no accidental open)
-- [ ] Swipe away notification: dismiss intent fires, `notificationActive` updated
-- [ ] Re-open app: previous notification state restored
+- [ ] Import EPUB and TXT
+- [ ] Notification appears in correct color for light/dark mode
+- [ ] Expand notification: ← title → row with grey button backgrounds, sentence text below
+- [ ] Tap ← / → : navigate sentences; arrow disappears at first/last
+- [ ] Tap title: opens app
+- [ ] Tap sentence text: nothing happens
+- [ ] Swipe away: fires dismiss intent, notificationActive updated
+- [ ] Title shows `"0% · Book · Chapter"` format
+- [ ] "Mr. Smith" is not split across two segments
+- [ ] "03. III. 1995." date is not split
+- [ ] Re-open app after force-close: notification still present
 
 ---
 
-## Known Limitations & Trade-Offs
+## Known Limitations
 
-### 1. Samsung One UI Grey Card Border
-- **Issue:** Notification has a grey/dark card background visible around the purple content on Samsung devices
-- **Root cause:** Samsung wraps all notifications in an OEM card UI. We can only color our custom inner view, not the card chrome.
-- **Why not fixed:** Would require either (a) using standard template (loses custom arrows) or (b) device-specific branching (complexity vs. minor visual issue)
-- **Impact:** Functional, just not full-bleed purple. Works fine on MIUI.
+1. **No scrolling in expanded notification** — RemoteViews whitelist excludes ScrollView. Long segments capped at 8 lines. User can tap title to read full text in app.
 
-### 2. No Scrolling in Expanded Notification
-- **Issue:** Long sentences clipped at maxLines=8
-- **Root cause:** RemoteViews whitelist doesn't include ScrollView or RecyclerView
-- **Workaround:** User taps title to open app and see full sentence
-- **Acceptable because:** Most sentences are under 8 lines; users can tap title if needed
+2. **No custom collapsed layout** — collapsed state uses Android's standard template (no arrows). User must expand to navigate.
 
-### 3. Re-import Books for New Chunking
-- **Issue:** Books parsed with old greedy algorithm still use old chunks in DB
-- **Solution:** Users need to remove and re-import books to get equal-size chunks
-- **Automation:** Could write a migration, but not urgent since user base is small
+3. **Notification lifespan** — no foreground service means system can kill under memory pressure. Intentional trade-off (MIUI compatibility).
 
-### 4. Notification Lifespan
-- **Issue:** Without foreground service, system can kill notifications under memory pressure
-- **Acceptable because:** User can re-enable via app; persistent notifications felt intrusive. The tradeoff is intentional.
+4. **Re-import required after splitter changes** — DB stores pre-parsed sentences; no auto-migration.
+
+5. **Samsung grey card border** (historical) — custom RemoteViews sit inside Samsung's card chrome. Solved by removing the purple background and using standard template for collapsed state.
 
 ---
 
-## Next Steps (If Needed)
+## Git Workflow
 
-1. **Samsung grey border:** Accept as OEM quirk, or investigate `setColorized(true)` behavior on One UI with custom views
-2. **Visual polish:** Test on various Android versions (7, 10, 12, 14) to ensure consistent appearance
-3. **Book management:** Add book metadata editing, favorites, reading time tracking
-4. **Parsing robustness:** Handle edge cases in EPUB (nested tags, CSS styling, images)
-5. **Performance:** Profile parsing on large books (1000+ pages) to optimize WorkManager tasks
+Commits pushed to `https://github.com/YesThats3DPrinted/notibook` after every meaningful change.
 
----
-
-## Useful References
-
-- **NotiNotes GitHub:** https://github.com/Yanndroid/NotiNotes (reference for cross-device notification coloring)
-- **Android RemoteViews Whitelist:** Only the view classes listed above are allowed in notification layouts
-- **Room Database:** `androidx.room:room-runtime`
-- **WorkManager:** `androidx.work:work-runtime-ktx` for async parsing
-- **Jetpack Compose:** UI framework for main app screens
-
----
-
-## Git Workflow (Going Forward)
-
-All changes are committed locally and pushed to GitHub immediately. Each commit includes:
-- Clear message describing the change
-- "Co-Authored-By: Claude Haiku 4.5" line for transparency
-- Logical grouping (one feature = one commit, not one file = one commit)
-
-To revert or check history:
 ```bash
-git log --oneline
-git show <commit-hash>
-git revert <commit-hash>
+git log --oneline        # view history
+git show <hash>          # inspect a commit
+git revert <hash>        # safely undo a commit
 ```
+
+Each commit message includes `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
