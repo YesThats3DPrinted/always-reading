@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Expanded notification view.
-     Row 1: [← weight=1] [title weight=4] [→ weight=1] — each with a rounded grey button bg
+     Row 1: [← ImageButton weight=1] [title TextView weight=4] [→ ImageButton weight=1]
      Row 2: sentence text (maxLines=8)
-     Text colors set at runtime based on dark/light mode. -->
+     Text/icon colors set at runtime based on dark/light mode. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/notif_root_expanded"
     android:layout_width="match_parent"
@@ -12,28 +12,28 @@
     android:paddingTop="6dp"
     android:paddingBottom="10dp">
 
-    <!-- Title row with arrows on either side -->
+    <!-- Title row with arrow buttons on either side -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="44dp"
         android:orientation="horizontal">
 
-        <TextView
+        <ImageButton
             android:id="@+id/btn_prev"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@drawable/notif_btn_bg"
-            android:gravity="center"
-            android:text="←"
-            android:textSize="18sp" />
+            android:scaleType="center"
+            android:src="@drawable/ic_arrow_left" />
 
         <TextView
             android:id="@+id/tv_notification_title"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="4"
-            android:layout_marginHorizontal="4dp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/notif_btn_bg"
             android:ellipsize="end"
             android:gravity="center_vertical"
@@ -42,15 +42,14 @@
             android:textSize="11sp"
             android:textStyle="bold" />
 
-        <TextView
+        <ImageButton
             android:id="@+id/btn_next"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="@drawable/notif_btn_bg"
-            android:gravity="center"
-            android:text="→"
-            android:textSize="18sp" />
+            android:scaleType="center"
+            android:src="@drawable/ic_arrow_right" />
 
     </LinearLayout>
 

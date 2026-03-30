@@ -331,14 +331,24 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
-## Git Workflow
+## Git Workflow & Commit Strategy
 
-Commits pushed to `https://github.com/YesThats3DPrinted/notibook` after every meaningful change.
+**When to push to GitHub:**
+- After a major architectural or feature change (e.g., removing foreground service, switching notification layouts, adding abbreviation merging)
+- When 3–5 small changes have accumulated and form a logical unit
+- Before major refactoring or risky changes (for safety)
+- **NOT** after every tiny adjustment (single-line fixes, minor tweaks)
+
+This keeps the commit history clean, navigable, and meaningful rather than hundreds of granular commits. Use `git log --oneline` to review what's been committed locally before deciding to push.
+
+**Local commits between pushes** are fine — they're safe on disk and can be amended/squashed if needed before pushing. Use:
 
 ```bash
-git log --oneline        # view history
+git log --oneline        # view local + remote history
 git show <hash>          # inspect a commit
 git revert <hash>        # safely undo a commit
+git commit --amend       # modify the last local commit (before push)
+git push                 # push accumulated commits to GitHub
 ```
 
-Each commit message includes `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+Each commit message includes `Co-Authored-By: Claude Haiku/Sonnet 4.x <noreply@anthropic.com>` to track AI contributions.
