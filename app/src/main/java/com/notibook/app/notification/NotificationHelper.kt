@@ -65,7 +65,6 @@ object NotificationHelper {
 
         return NotificationCompat.Builder(context, NotiBookApp.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_book)
-            .setContentTitle(titleText)
             .setContentText(displayText)
             .setCustomBigContentView(expanded)
             .setDeleteIntent(makeBroadcast(context, NotificationActionReceiver.ACTION_DISMISS, book.id))
@@ -107,6 +106,7 @@ object NotificationHelper {
         wireNavigation(context, bookId, isFirst, isLast, iconAlpha, iconAlphaFaint, textColorFaint)
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun RemoteViews.wireNavigation(
         context: Context,
         bookId: Long,

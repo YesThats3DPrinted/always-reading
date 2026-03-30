@@ -1,69 +1,61 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Collapsed (small) notification.
-     The sentence text is clipped at a fixed FrameLayout height.
-     No hardcoded colors — Android applies the correct text/background colors
-     for the device theme (light or dark mode) automatically. -->
+<!-- Compact collapsed notification — must fit within Android's ~64dp collapsed height.
+     Row 1: title (bold, single line)
+     Row 2: [← 32dp] [sentence, maxLines=1, weight=1] [→ 32dp]
+     Colors set at runtime in NotificationHelper (dark/light mode). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/notif_root_collapsed"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:paddingHorizontal="8dp"
-    android:paddingTop="2dp"
-    android:paddingBottom="8dp">
+    android:paddingTop="4dp"
+    android:paddingBottom="6dp">
 
-    <!-- Title row: [← weight=1] [Book · Chapter · % weight=4] [→ weight=1] -->
+    <!-- Row 1: title -->
+    <TextView
+        android:id="@+id/tv_notification_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <!-- Row 2: ← sentence → inline -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="44dp"
+        android:layout_height="32dp"
+        android:layout_marginTop="4dp"
         android:orientation="horizontal">
 
-        <TextView
+        <ImageButton
             android:id="@+id/btn_prev"
-            android:layout_width="0dp"
+            android:layout_width="32dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="←"
-            android:textSize="18sp" />
-
-        <TextView
-            android:id="@+id/tv_notification_title"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="4"
-            android:ellipsize="end"
-            android:gravity="center_vertical"
-            android:maxLines="1"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/btn_next"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="→"
-            android:textSize="18sp" />
-
-    </LinearLayout>
-
-    <!-- Sentence preview clipped to 64dp. -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="64dp"
-        android:layout_marginTop="6dp"
-        android:layout_marginHorizontal="6dp"
-        android:clipChildren="true">
+            android:background="@drawable/notif_btn_bg"
+            android:scaleType="center"
+            android:src="@drawable/ic_arrow_left" />
 
         <TextView
             android:id="@+id/tv_sentence"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:lineSpacingMultiplier="1.3"
-            android:textSize="15sp" />
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginHorizontal="4dp"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:textSize="13sp" />
 
-    </FrameLayout>
+        <ImageButton
+            android:id="@+id/btn_next"
+            android:layout_width="32dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/notif_btn_bg"
+            android:scaleType="center"
+            android:src="@drawable/ic_arrow_right" />
+
+    </LinearLayout>
 
 </LinearLayout>
