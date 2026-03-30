@@ -47,9 +47,9 @@ object NotificationHelper {
             (sentence.sentenceIndex * 100) / book.totalSentences else 0
 
         val titleText = buildString {
-            append(book.title)
+            append("$pct%")
+            append(" · ${book.title}")
             if (sentence.chapter.isNotBlank()) append(" · ${sentence.chapter}")
-            append(" · $pct%")
         }
 
         // Only a custom expanded (big) view — the collapsed state uses Android's

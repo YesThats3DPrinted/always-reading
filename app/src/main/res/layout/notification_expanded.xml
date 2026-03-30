@@ -1,16 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Expanded notification view.
-     Row 1: [← weight=1] [title weight=4] [→ weight=1]
+     Row 1: [← weight=1] [title weight=4] [→ weight=1] — each with a rounded grey button bg
      Row 2: sentence text (maxLines=8)
-     No hardcoded colors — Android applies the correct text/background colors
-     for the device theme (light or dark mode) automatically. -->
+     Text colors set at runtime based on dark/light mode. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/notif_root_expanded"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:paddingHorizontal="8dp"
-    android:paddingTop="2dp"
+    android:paddingTop="6dp"
     android:paddingBottom="10dp">
 
     <!-- Title row with arrows on either side -->
@@ -24,6 +23,8 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/notif_btn_bg"
             android:gravity="center"
             android:text="←"
             android:textSize="18sp" />
@@ -33,9 +34,12 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="4"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/notif_btn_bg"
             android:ellipsize="end"
             android:gravity="center_vertical"
             android:maxLines="1"
+            android:paddingHorizontal="10dp"
             android:textSize="11sp"
             android:textStyle="bold" />
 
@@ -44,13 +48,14 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
+            android:background="@drawable/notif_btn_bg"
             android:gravity="center"
             android:text="→"
             android:textSize="18sp" />
 
     </LinearLayout>
 
-    <!-- Sentence text. Android's RemoteViews whitelist does NOT include ScrollView,
+    <!-- Sentence text. RemoteViews whitelist does NOT include ScrollView,
          so we cap at 8 lines. ellipsize is a last-resort safety net. -->
     <TextView
         android:id="@+id/tv_sentence"

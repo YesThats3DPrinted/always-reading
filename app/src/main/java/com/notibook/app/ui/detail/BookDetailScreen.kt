@@ -9,7 +9,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -18,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
@@ -37,8 +35,6 @@ fun BookDetailScreen(
 
     var showRestartDialog by remember { mutableStateOf(false) }
     var showRemoveDialog by remember { mutableStateOf(false) }
-    var sentenceInput by remember { mutableStateOf("") }
-    var pageInput by remember { mutableStateOf("") }
 
     // Android 13+ requires runtime permission for POST_NOTIFICATIONS
     val notifPermission = rememberLauncherForActivityResult(
@@ -140,54 +136,6 @@ fun BookDetailScreen(
                         }
                     }
                 )
-            }
-
-            HorizontalDivider()
-
-            // ── Jump to sentence ──────────────────────────────────────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = sentenceInput,
-                    onValueChange = { sentenceInput = it.filter(Char::isDigit) },
-                    label = { Text("Jump to sentence") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Button(
-                    onClick = {
-                        sentenceInput.toIntOrNull()?.let { vm.jumpToSentence(it - 1) }
-                        sentenceInput = ""
-                    },
-                    enabled = sentenceInput.isNotEmpty() && !b.isParsing && b.totalSentences > 0
-                ) { Text("Go") }
-            }
-
-            // ── Jump to page ──────────────────────────────────────────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = pageInput,
-                    onValueChange = { pageInput = it.filter(Char::isDigit) },
-                    label = { Text("Jump to page (15 sentences/page)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Button(
-                    onClick = {
-                        pageInput.toIntOrNull()?.let { vm.jumpToPage(it) }
-                        pageInput = ""
-                    },
-                    enabled = pageInput.isNotEmpty() && !b.isParsing && b.totalSentences > 0
-                ) { Text("Go") }
             }
 
             HorizontalDivider()
