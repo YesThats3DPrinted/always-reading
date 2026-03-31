@@ -141,21 +141,23 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
         val fontSize = prefs.fontSize
         val initialCss = """
-            html, body { background: #1A1A1A !important; color: #E0E0E0 !important;
-                         margin: 0; padding: 0; overflow: hidden; height: 100%; }
-            #__content  { height: 100vh; padding: 56px 16px 16px 16px;
-                          box-sizing: border-box; column-width: 100vw;
-                          column-gap: 0; column-fill: auto; font-size: ${fontSize}px;
-                          font-family: serif; line-height: 1.6; }
-            * { max-width: 100%; box-sizing: border-box; }
-            a { color: #7CB9E8; }
+            body * { color: #E0E0E0 !important; max-width: 100%; box-sizing: border-box;
+                     overflow-wrap: break-word; word-break: break-word; }
+            a, a * { color: #7CB9E8 !important; }
+            html { height: 100%; overflow: hidden; clip-path: inset(0); }
+            body { background: #1A1A1A !important; color: #E0E0E0 !important;
+                   margin: 0; padding: 0; overflow: visible;
+                   column-gap: 0; column-fill: auto;
+                   font-size: ${fontSize}px; font-family: serif; line-height: 1.6; }
         """.trimIndent().replace("\n", " ")
 
         val paragraphs = content.split(Regex("\n{2,}")).filter { it.isNotBlank() }
         return buildString {
-            append("<html><head><meta charset='UTF-8'>")
+            append("<html><head>")
+            append("<meta charset='UTF-8'>")
+            append("<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>")
             append("<style id='__nb_css'>$initialCss</style>")
-            append("</head><body><div id='__content'>")
+            append("</head><body>")
             paragraphs.forEachIndexed { idx, para ->
                 val si = blockToFirstSi[idx]
                 val siAttr = if (si != null) " data-si=\"$si\"" else ""
@@ -169,7 +171,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 append("</p>")
             }
-            append("</div></body></html>")
+            append("</body></html>")
         }
     }
 
@@ -288,7 +290,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         val js = buildString {
             append("(function(){")
             if (spineIdx >= 0) {
-                // Jump to the chapter div, then optionally to the fragment
                 append("var ch=document.getElementById('chapter-$spineIdx');")
                 append("var target=ch;")
                 if (fragment != null) {
@@ -297,15 +298,18 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                     append("if(fr)target=fr;")
                 }
                 append("if(target){")
-                append("var first=target.querySelector('p,h1,h2,h3')||target;")
-                append("var page=Math.floor(first.offsetLeft/window.innerWidth);")
+                append("var cw=window.__colW||window.innerWidth;")
+                append("var page=Math.floor(target.offsetLeft/cw);")
+                append("window.__currentPage=page;document.body.style.transform='translateX(-'+(page*cw)+'px)';")
                 append("NotiBook.onScrollToPage(page);")
                 append("}")
             } else if (fragment != null) {
                 val safe = fragment.replace("'", "\\'")
                 append("var fr=document.getElementById('$safe')||document.querySelector('[name=\"$safe\"]');")
                 append("if(fr){")
-                append("var page=Math.floor(fr.offsetLeft/window.innerWidth);")
+                append("var cw=window.__colW||window.innerWidth;")
+                append("var page=Math.floor(fr.offsetLeft/cw);")
+                append("window.__currentPage=page;document.body.style.transform='translateX(-'+(page*cw)+'px)';")
                 append("NotiBook.onScrollToPage(page);")
                 append("}")
             }

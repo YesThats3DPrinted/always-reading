@@ -26,17 +26,17 @@ object EpubCombiner {
      * The full CSS (with exact font size) is re-injected by JS after onPageFinished.
      */
     private fun initialCss(fontSize: Int) = """
-        html, body { background: #1A1A1A !important; color: #E0E0E0 !important;
-                     margin: 0; padding: 0; overflow: hidden; height: 100%; }
-        #__content  { height: 100vh; padding: 56px 16px 16px 16px;
-                      box-sizing: border-box; column-width: 100vw;
-                      column-gap: 0; column-fill: auto; font-size: ${fontSize}px;
-                      font-family: serif; line-height: 1.6; }
-        * { max-width: 100%; box-sizing: border-box; }
-        a { color: #7CB9E8; }
-        img { width: auto; height: auto; max-height: 80vh; object-fit: contain; }
+        body * { color: #E0E0E0 !important; max-width: 100%; box-sizing: border-box;
+                 overflow-wrap: break-word; word-break: break-word; }
+        a, a * { color: #7CB9E8 !important; }
+        html { height: 100%; overflow: hidden; clip-path: inset(0); }
+        body { background: #1A1A1A !important; color: #E0E0E0 !important;
+               margin: 0; padding: 0; overflow: visible;
+               column-gap: 0; column-fill: auto;
+               font-size: ${fontSize}px; font-family: serif; line-height: 1.6; }
+        img { color: transparent !important; width: auto; height: auto; max-height: 80vh; object-fit: contain; }
         table { width: 100%; }
-        pre, code { white-space: pre-wrap; word-break: break-word; }
+        pre, code { white-space: pre-wrap; }
     """.trimIndent().replace("\n", " ")
 
     suspend fun buildCombinedHtml(
@@ -45,10 +45,12 @@ object EpubCombiner {
         fontSize: Int = 16
     ): String = withContext(Dispatchers.IO) {
         buildString {
-            append("<html><head><meta charset='UTF-8'>")
+            append("<html><head>")
+            append("<meta charset='UTF-8'>")
+            append("<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>")
             append("<style id='__nb_css'>")
             append(initialCss(fontSize))
-            append("</style></head><body><div id='__content'>")
+            append("</style></head><body>")
             for ((index, item) in spineItems.withIndex()) {
                 append("\n<div id=\"chapter-$index\">")
                 val file = File(item.absolutePath)
@@ -114,7 +116,7 @@ object EpubCombiner {
                 }
                 append("\n</div>")
             }
-            append("\n</div></body></html>")
+            append("\n</body></html>")
         }
     }
 }

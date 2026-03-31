@@ -3,7 +3,10 @@ package com.notibook.app.ui.reader
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -53,11 +56,10 @@ fun EpubReaderScreen(
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // Drive CSS-columns page navigation: whenever currentPageIndex changes,
-    // apply translateX to move the content div to show the correct column.
+    // CSS-columns pagination: use window.__colW (set by buildJs) — same value used for column-width
     LaunchedEffect(currentPageIndex) {
         webViewRef.value?.evaluateJavascript(
-            "(function(){var c=document.getElementById('__content');if(c)c.style.transform='translateX(-'+($currentPageIndex*100)+'vw)';})()",
+            "(function(){var cw=window.__colW||window.innerWidth;window.__currentPage=$currentPageIndex;document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';})()",
             null
         )
     }
@@ -67,12 +69,12 @@ fun EpubReaderScreen(
         val idx = scrollToChapter ?: return@LaunchedEffect
         webViewRef.value?.evaluateJavascript("""
             (function(){
+                var cw=window.__colW||window.innerWidth;
                 var ch=document.getElementById('chapter-$idx');
                 if(!ch) return;
-                var first=ch.querySelector('p,h1,h2,h3')||ch;
-                var page=Math.floor(first.offsetLeft/window.innerWidth);
-                var c=document.getElementById('__content');
-                if(c) c.style.transform='translateX(-'+(page*100)+'vw)';
+                var page=Math.floor(ch.offsetLeft/cw);
+                window.__currentPage=page;
+                document.body.style.transform='translateX(-'+(page*cw)+'px)';
                 NotiBook.onScrollToPage(page);
             })()
         """.trimIndent(), null)
@@ -116,6 +118,7 @@ fun EpubReaderScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BG_COLOR)
+            .windowInsetsPadding(WindowInsets.systemBars)
     ) {
         when (val s = state) {
             is ReaderState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -240,6 +243,7 @@ fun EpubReaderScreen(
                         }
                     }
                 },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor         = BAR_COLOR,
                     titleContentColor      = TEXT_COLOR,
@@ -270,43 +274,44 @@ private fun ReaderContent(
     webViewRef: MutableState<WebView?>
 ) {
     fun buildCss() = buildString {
-        // html clips the content; body is the scrolling column container
-        append("html { overflow: hidden !important; height: 100% !important; }")
-        append(" body {")
+        // body * — NOT * — so body itself is never max-width constrained
+        // (body must expand freely to hold all CSS columns)
+        append("body * { color: #E0E0E0 !important; max-width: 100% !important;")
+        append(" box-sizing: border-box !important;")
+        append(" overflow-wrap: break-word !important; word-break: break-word !important; }")
+        append(" a, a * { color: #7CB9E8 !important; }")
+        // html clips to exactly one viewport — overflow:hidden here, NOT on body
+        append(" html { height: 100% !important; overflow: hidden !important; }")
+        // body expands freely (overflow:visible) so CSS columns can lay out horizontally;
+        // exact width/height set in JS via window.innerWidth/innerHeight (no vh/vw)
+        append(" body { background: #1A1A1A !important; color: #E0E0E0 !important;")
+        append(" margin: 0 !important; padding: 0 !important;")
+        append(" overflow: visible !important;")
+        append(" column-gap: 0px !important; column-fill: auto !important;")
         append(" font-size: ${fontSize}px !important;")
         append(" font-family: serif !important;")
-        append(" background: #1A1A1A !important;")
-        append(" color: #E0E0E0 !important;")
-        append(" line-height: 1.6 !important;")
-        append(" margin: 0 !important;")
-        append(" padding: 0 !important;")
-        append(" overflow: hidden !important;")
-        append(" height: 100% !important;")
-        append(" }")
-        // The __content div is the CSS columns container
-        append(" #__content {")
-        append(" height: 100vh !important;")
-        append(" padding: 56px 16px 16px 16px !important;")   // top padding clears the TopAppBar
-        append(" box-sizing: border-box !important;")
-        append(" column-width: 100vw !important;")
-        append(" column-gap: 0 !important;")
-        append(" column-fill: auto !important;")
-        append(" }")
-        append(" * { max-width: 100% !important; box-sizing: border-box !important; }")
-        append(" a { color: #7CB9E8 !important; }")
-        append(" img { width: auto !important; height: auto !important; max-height: 80vh !important; object-fit: contain !important; }")
+        append(" line-height: 1.6 !important; }")
+        append(" img { color: transparent !important; width: auto !important; height: auto !important;")
+        append(" max-height: 80vh !important; object-fit: contain !important; }")
         append(" table { width: 100% !important; }")
-        append(" pre, code { white-space: pre-wrap !important; word-break: break-word !important; }")
+        append(" pre, code { white-space: pre-wrap !important; }")
     }
 
-    fun buildJs() = """
+    // w/h passed from Kotlin measured dimensions — never rely on window.innerWidth/Height
+    // in JS which can be 0 if onPageFinished fires before the view is laid out.
+    fun buildJs(w: Int, h: Int) = """
         (function() {
-            // ── Block native touch scroll ─────────────────────────────────────
+            // ── Block native scroll (we handle all navigation ourselves) ──────
             document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
 
-            var content = document.getElementById('__content');
+            // ── Dimensions from Kotlin layout (always correct) ────────────────
+            var w = $w; var h = $h;
+            // Store column width globally so all navigation uses the same value
+            window.__colW = w;
+            // Hard clip at html bounds (overflow:hidden on root propagates to viewport, not a clip)
+            document.documentElement.style.setProperty('clip-path', 'inset(0)', 'important');
 
-            // ── Chapter tracking ──────────────────────────────────────────────
+            // ── Chapter tracking (offsetLeft in column layout) ────────────────
             var chapters = [], i = 0;
             while (true) {
                 var el = document.getElementById('chapter-' + i);
@@ -314,20 +319,24 @@ private fun ReaderContent(
                 chapters.push(el); i++;
             }
             function currentChapter() {
-                var page = window.__currentPage || 0;
-                var cx = page * window.innerWidth + window.innerWidth * 0.5;
+                var pageX = (window.__currentPage || 0) * w;
                 var cur = 0;
                 for (var j = 0; j < chapters.length; j++) {
-                    if (chapters[j].offsetLeft <= cx) cur = j; else break;
+                    if (chapters[j].offsetLeft <= pageX + 10) cur = j; else break;
                 }
                 return cur;
             }
 
-            // ── Total pages reporting ─────────────────────────────────────────
+            // ── Total pages ───────────────────────────────────────────────────
             function reportTotalPages() {
-                if (!content) return;
-                var total = Math.max(1, Math.ceil(content.scrollWidth / window.innerWidth));
+                var total = Math.max(1, Math.ceil(document.body.scrollWidth / w));
                 NotiBook.onTotalPages(total);
+            }
+
+            // ── Navigate to page (transform body left by page * width) ────────
+            function goToPage(page) {
+                window.__currentPage = page;
+                document.body.style.transform = 'translateX(-' + (page * w) + 'px)';
             }
 
             // ── Tap & swipe handling ──────────────────────────────────────────
@@ -354,7 +363,6 @@ private fun ReaderContent(
                     else        NotiBook.onPrevPage();
                 } else if (absDx < TAP_MAX_MOVE && absDy < TAP_MAX_MOVE && dt < TAP_MAX_MS) {
                     var x = touchStartX;
-                    var w = window.innerWidth;
                     if (x < w * 0.3)      NotiBook.onPrevPage();
                     else if (x > w * 0.7) NotiBook.onNextPage();
                     else                   NotiBook.onCenterTap();
@@ -377,24 +385,23 @@ private fun ReaderContent(
             var targetPage = $restorePageIndex;
             window.__currentPage = targetPage;
             function tryRestore() {
-                if (!content) { content = document.getElementById('__content'); }
-                if (!content) { setTimeout(tryRestore, 200); return; }
-                var total = Math.ceil(content.scrollWidth / window.innerWidth);
-                if (total < 2 && targetPage > 0) { setTimeout(tryRestore, 300); return; }
-                content.style.transform = 'translateX(-' + (targetPage * 100) + 'vw)';
+                // Wait until browser has laid out columns (scrollWidth grows beyond one viewport)
+                if (document.body.scrollWidth <= w + 5 && targetPage > 0) {
+                    setTimeout(tryRestore, 300); return;
+                }
+                goToPage(targetPage);
                 reportTotalPages();
                 if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
             }
-            if (targetPage > 0) {
-                setTimeout(tryRestore, 400);
-            } else {
-                setTimeout(reportTotalPages, 500);
-            }
+            // Small delay lets the browser finish column layout before we read scrollWidth
+            setTimeout(function() {
+                tryRestore();
+                if (targetPage === 0) reportTotalPages();
+            }, 600);
         })();
     """.trimIndent()
 
     val cssRef = rememberUpdatedState(buildCss())
-    val jsRef  = rememberUpdatedState(buildJs())
 
     // Re-inject CSS when font size changes
     LaunchedEffect(fontSize) {
@@ -409,8 +416,18 @@ private fun ReaderContent(
 
     AndroidView(
         factory = { ctx ->
+            WebView.setWebContentsDebuggingEnabled(true)
             WebView(ctx).apply {
                 webViewRef.value = this
+                isHorizontalScrollBarEnabled = false
+                isVerticalScrollBarEnabled   = false
+                overScrollMode = android.view.View.OVER_SCROLL_NEVER
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                        Log.d("NotiBook_JS", "${msg.messageLevel()} ${msg.message()} [${msg.sourceId()}:${msg.lineNumber()}]")
+                        return true
+                    }
+                }
                 settings.apply {
                     javaScriptEnabled   = true
                     allowFileAccess     = true
@@ -418,6 +435,8 @@ private fun ReaderContent(
                     builtInZoomControls = false
                     displayZoomControls = false
                     setSupportZoom(false)
+                    useWideViewPort     = false   // never use 980px desktop viewport
+                    loadWithOverviewMode = false  // never scale page to fit
                     @Suppress("DEPRECATION")
                     allowFileAccessFromFileURLs = false
                 }
@@ -430,6 +449,7 @@ private fun ReaderContent(
                     @JavascriptInterface fun onChapterVisible(idx: Int)    = onChapterVisible(idx)
                     @JavascriptInterface fun onScrollToPage(page: Int)     = onScrollToPage(page)
                     @JavascriptInterface fun onInternalLink(href: String)  = onInternalLink(href)
+                    @JavascriptInterface fun debugReport(msg: String)      = Log.d("NotiBook", "JS: $msg")
                 }, "NotiBook")
 
                 webViewClient = object : WebViewClient() {
@@ -445,17 +465,48 @@ private fun ReaderContent(
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
-                        // The HTML already contains #__content and <style id="__nb_css">.
-                        // Just update the style with the full CSS (includes exact font size)
-                        // and then run the interaction JS.
                         val css     = cssRef.value
-                        val js      = jsRef.value
                         val escaped = css.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-                        view.evaluateJavascript(
-                            "(function(){var s=document.getElementById('__nb_css');if(s)s.textContent='$escaped';})()",
-                            null
-                        )
-                        view.evaluateJavascript(js, null)
+
+                        // Use Android-measured dimensions (always reliable) rather than
+                        // window.innerWidth/Height which can be 0 if layout hasn't happened yet.
+                        val density = view.context.resources.displayMetrics.density
+                        val wCss = (view.width  / density).toInt()
+                        val hCss = (view.height / density).toInt()
+
+                        // If the view hasn't been measured yet, defer until it is.
+                        if (wCss <= 0 || hCss <= 0) {
+                            view.post { onPageFinished(view, url) }
+                            return
+                        }
+
+                        view.evaluateJavascript("""
+                            (function(){
+                                var s=document.getElementById('__nb_css');
+                                if(s) s.textContent='$escaped';
+                                // Dimensions from Android layout — guaranteed correct
+                                var w=$wCss; var h=$hCss;
+                                var de=document.documentElement;
+                                de.style.setProperty('width',     w+'px',    'important');
+                                de.style.setProperty('height',    h+'px',    'important');
+                                de.style.setProperty('overflow',  'hidden',  'important');
+                                // clip-path clips rendered output at element bounds —
+                                // unlike overflow:hidden on root, it is NOT propagated to viewport
+                                de.style.setProperty('clip-path', 'inset(0)', 'important');
+                                var b=document.body;
+                                b.style.setProperty('margin',       '0',       'important');
+                                b.style.setProperty('padding',      '0',       'important');
+                                b.style.setProperty('background',   '#1A1A1A', 'important');
+                                b.style.setProperty('color',        '#E0E0E0', 'important');
+                                b.style.setProperty('width',        w+'px',    'important');
+                                b.style.setProperty('height',       h+'px',    'important');
+                                b.style.setProperty('overflow',     'visible', 'important');
+                                b.style.setProperty('column-width', w+'px',    'important');
+                                b.style.setProperty('column-gap',   '0px',     'important');
+                                b.style.setProperty('column-fill',  'auto',    'important');
+                            })()
+                        """.trimIndent(), null)
+                        view.evaluateJavascript(buildJs(wCss, hCss), null)
                     }
                 }
             }
@@ -466,6 +517,8 @@ private fun ReaderContent(
                 wv.loadDataWithBaseURL(baseUrl, combinedHtml, "text/html", "UTF-8", null)
             }
         },
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .padding(top = 60.dp, start = 20.dp, end = 20.dp, bottom = 16.dp)
+            .fillMaxSize()
     )
 }
