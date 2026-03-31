@@ -48,6 +48,7 @@ fun EpubReaderScreen(
     val currentPageIndex by vm.currentPageIndex.collectAsState()
     val scrollToChapter  by vm.scrollToChapterCommand.collectAsState()
     val topBarVisible    by vm.topBarVisible.collectAsState()
+    val isReiniting      by vm.isReiniting.collectAsState()
     val prefs            = vm.readerPreferences
 
     var fontSize        by remember { mutableIntStateOf(prefs.fontSize) }
@@ -56,7 +57,9 @@ fun EpubReaderScreen(
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // CSS-columns pagination: animate the slide, use __colW for exact column alignment
+    // CSS-columns pagination: animate the slide, use __colW for exact column alignment.
+    // Also reports data-si of the top element after the animation so the ViewModel always
+    // has a text-level anchor for orientation-change restoration.
     LaunchedEffect(currentPageIndex) {
         webViewRef.value?.evaluateJavascript(
             """(function(){
@@ -64,6 +67,13 @@ fun EpubReaderScreen(
                 window.__currentPage=$currentPageIndex;
                 document.body.style.setProperty('transition','transform 0.25s ease','important');
                 document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';
+                setTimeout(function(){
+                    var el=document.elementFromPoint(cw*0.5,60);
+                    for(var i=0;i<8&&el;i++){
+                        if(el.dataset&&el.dataset.si!==undefined){NotiBook.onDataSi(parseInt(el.dataset.si));return;}
+                        el=el.parentElement;
+                    }
+                },300);
             })()""",
             null
         )
@@ -138,19 +148,33 @@ fun EpubReaderScreen(
             }
 
             is ReaderState.Ready -> ReaderContent(
-                combinedHtml     = s.combinedHtml,
-                baseUrl          = s.baseUrl,
-                restorePageIndex = s.restorePageIndex,
-                spineItems       = s.spineItems,
-                fontSize         = fontSize,
-                onPrevPage       = { vm.onPrevPage() },
-                onNextPage       = { vm.onNextPage() },
-                onCenterTap      = { vm.onCenterTap() },
-                onTotalPages     = { total -> vm.onTotalPages(total) },
-                onChapterVisible = { idx -> vm.onChapterVisible(idx) },
-                onScrollToPage   = { page -> vm.onScrollToPage(page) },
-                onInternalLink   = { href -> vm.handleInternalLink(href, webViewRef.value) },
-                webViewRef       = webViewRef
+                combinedHtml          = s.combinedHtml,
+                baseUrl               = s.baseUrl,
+                restorePageIndex      = s.restorePageIndex,
+                spineItems            = s.spineItems,
+                fontSize              = fontSize,
+                onPrevPage            = { vm.onPrevPage() },
+                onNextPage            = { vm.onNextPage() },
+                onCenterTap           = { vm.onCenterTap() },
+                onTotalPages          = { total -> vm.onTotalPages(total) },
+                onChapterVisible      = { idx -> vm.onChapterVisible(idx) },
+                onScrollToPage        = { page -> vm.onScrollToPage(page) },
+                onInternalLink        = { href -> vm.handleInternalLink(href, webViewRef.value) },
+                onDataSi              = { si -> vm.onDataSi(si) },
+                onReady               = { vm.onReady() },
+                onStartReinit         = { vm.startReinit() },
+                restoreSentenceIndex  = { vm.restoreSentenceIndex },
+                webViewRef            = webViewRef
+            )
+        }
+
+        // Opaque overlay shown while CSS columns re-initialize after orientation change.
+        // Hides the brief reflow animation so the user sees a clean transition.
+        if (isReiniting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(BG_COLOR)
             )
         }
 
@@ -276,6 +300,10 @@ private fun ReaderContent(
     onChapterVisible: (Int) -> Unit,
     onScrollToPage: (Int) -> Unit,
     onInternalLink: (String) -> Unit,
+    onDataSi: (Int) -> Unit,
+    onReady: () -> Unit,
+    onStartReinit: () -> Unit,
+    restoreSentenceIndex: () -> Int,   // lambda so factory always reads latest value
     webViewRef: MutableState<WebView?>
 ) {
     fun buildCss() = buildString {
@@ -346,6 +374,20 @@ private fun ReaderContent(
                 NotiBook.onTotalPages(total);
             }
 
+            // ── data-si tracking ──────────────────────────────────────────────
+            // Reports the sentence index at the top of the current page so the
+            // ViewModel can restore position after an orientation change.
+            function reportDataSi() {
+                var el = document.elementFromPoint(w * 0.5, 60);
+                for (var i = 0; i < 8 && el; i++) {
+                    if (el.dataset && el.dataset.si !== undefined) {
+                        NotiBook.onDataSi(parseInt(el.dataset.si));
+                        return;
+                    }
+                    el = el.parentElement;
+                }
+            }
+
             // ── Navigate to page instantly (restore/chapter-jump — no animation) ─
             function goToPage(page) {
                 window.__currentPage = page;
@@ -406,6 +448,8 @@ private fun ReaderContent(
                 goToPage(targetPage);
                 reportTotalPages();
                 if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
+                // Report data-si after page is set so ViewModel has an anchor for re-init
+                setTimeout(reportDataSi, 100);
             }
             // Small delay lets the browser finish column layout before we read scrollWidth
             setTimeout(function() {
@@ -437,6 +481,9 @@ private fun ReaderContent(
                     img.style.setProperty('max-height', ph + 'px', 'important');
                 }
             }
+            // Expose globally so buildReinitJs can call it after orientation change
+            window.__fixImages = fixImages;
+
             // Run after layout; re-report total pages because images add height/columns
             setTimeout(function() { fixImages(); reportTotalPages(); }, 800);
             window.addEventListener('load', function() { fixImages(); reportTotalPages(); });
@@ -444,6 +491,51 @@ private fun ReaderContent(
     """.trimIndent()
 
     val cssRef = rememberUpdatedState(buildCss())
+
+    // rememberUpdatedState ensures the factory lambda (which runs once) always
+    // reads the current callbacks even after recomposition.
+    val onDataSiRef       = rememberUpdatedState(onDataSi)
+    val onReadyRef        = rememberUpdatedState(onReady)
+    val onStartReinitRef  = rememberUpdatedState(onStartReinit)
+    val restoreSiRef      = rememberUpdatedState(restoreSentenceIndex)
+
+    // Builds the JS that re-initializes CSS columns after an orientation change.
+    // - Sets new viewport dimensions on html/body.
+    // - Waits one frame for the browser to reflow columns.
+    // - Finds the element with the saved data-si and jumps to its new page.
+    // - Re-fixes images and reports new total pages.
+    // - Calls NotiBook.onReady() to hide the overlay.
+    fun buildReinitJs(w: Int, h: Int, si: Int) = """
+        (function(){
+            var w=$w; var h=$h;
+            window.__colW = w;
+            var de = document.documentElement;
+            de.style.setProperty('width',     w+'px',    'important');
+            de.style.setProperty('height',    h+'px',    'important');
+            de.style.setProperty('clip-path', 'inset(0)', 'important');
+            var b = document.body;
+            b.style.setProperty('width',        w+'px', 'important');
+            b.style.setProperty('height',       h+'px', 'important');
+            b.style.setProperty('column-width', w+'px', 'important');
+            b.style.setProperty('transition',   'none', 'important');
+            b.style.transform = 'translateX(0px)';
+            setTimeout(function(){
+                var targetPage = 0;
+                var si = $si;
+                if (si >= 0) {
+                    var el = document.querySelector('[data-si="'+si+'"]');
+                    if (el) targetPage = Math.floor(el.offsetLeft / w);
+                }
+                window.__currentPage = targetPage;
+                b.style.transform = 'translateX(-'+(targetPage*w)+'px)';
+                if (window.__fixImages) window.__fixImages();
+                var total = Math.max(1, Math.ceil(b.scrollWidth / w));
+                NotiBook.onTotalPages(total);
+                NotiBook.onScrollToPage(targetPage);
+                NotiBook.onReady();
+            }, 250);
+        })()
+    """.trimIndent()
 
     // Re-inject CSS when font size changes
     LaunchedEffect(fontSize) {
@@ -495,8 +587,31 @@ private fun ReaderContent(
                     @JavascriptInterface fun onChapterVisible(idx: Int)    = onChapterVisible(idx)
                     @JavascriptInterface fun onScrollToPage(page: Int)     = onScrollToPage(page)
                     @JavascriptInterface fun onInternalLink(href: String)  = onInternalLink(href)
+                    @JavascriptInterface fun onDataSi(si: Int)             = onDataSiRef.value(si)
+                    @JavascriptInterface fun onReady()                     = onReadyRef.value()
                     @JavascriptInterface fun debugReport(msg: String)      = Log.d("NotiBook", "JS: $msg")
                 }, "NotiBook")
+
+                // Detect orientation changes: when the WebView width changes significantly
+                // after it has already loaded, trigger a column re-init.
+                addOnLayoutChangeListener { _, left, top, right, bottom,
+                                            oldLeft, _, oldRight, _ ->
+                    val newW = right - left
+                    val newH = bottom - top
+                    val oldW = oldRight - oldLeft
+                    // oldW == 0 means this is the initial layout — skip it.
+                    // Only act when the width changes meaningfully (rotation).
+                    if (oldW > 0 && Math.abs(newW - oldW) > 20 && newW > 0 && newH > 0) {
+                        val density = context.resources.displayMetrics.density
+                        val wCss = (newW / density).toInt()
+                        val hCss = (newH / density).toInt()
+                        val si   = restoreSiRef.value()   // latest data-si from ViewModel
+                        onStartReinitRef.value()           // show overlay immediately
+                        post {
+                            evaluateJavascript(buildReinitJs(wCss, hCss, si), null)
+                        }
+                    }
+                }
 
                 webViewClient = object : WebViewClient() {
                     // Intercept all file:// sub-resource requests (images, CSS, fonts) and

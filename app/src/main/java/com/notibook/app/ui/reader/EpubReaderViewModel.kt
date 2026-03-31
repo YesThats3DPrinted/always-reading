@@ -55,6 +55,17 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _topBarVisible = MutableStateFlow(true)
     val topBarVisible: StateFlow<Boolean> = _topBarVisible.asStateFlow()
 
+    // Tracks the data-si of the element at the top of the current page.
+    // Used to restore position after orientation change (page index is meaningless
+    // across different column widths, but data-si is a text-level anchor).
+    private val _restoreSentenceIndex = MutableStateFlow(-1)
+    val restoreSentenceIndex: Int get() = _restoreSentenceIndex.value
+
+    // True while the WebView is re-initializing columns after a screen resize.
+    // An opaque overlay is shown to hide the reflow animation.
+    private val _isReiniting = MutableStateFlow(false)
+    val isReiniting: StateFlow<Boolean> = _isReiniting.asStateFlow()
+
     val readerPreferences: ReaderPreferences get() = prefs
 
     private var bookId: Long = -1L
@@ -329,6 +340,17 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
         if (js.isNotEmpty()) webView.post { webView.evaluateJavascript(js, null) }
     }
+
+    // ── Orientation re-init ───────────────────────────────────────────────────
+
+    /** Called from JS bridge: records the data-si at the top of the current page. */
+    fun onDataSi(si: Int) { if (si >= 0) _restoreSentenceIndex.value = si }
+
+    /** Called from JS bridge: columns fully re-laid-out after resize, hide overlay. */
+    fun onReady() { _isReiniting.value = false }
+
+    /** Called from Kotlin when screen width changes: show overlay before re-init JS fires. */
+    fun startReinit() { _isReiniting.value = true }
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
