@@ -99,17 +99,14 @@ fun EpubReaderScreen(
     fun closeReader(startNotification: Boolean) {
         val wv = webViewRef.value
         if (wv != null) {
-            // Get data-si of the element at the top-centre of the current page.
-            // Because all block elements were annotated at build time, this gives
-            // the exact sentence index with no approximation or text matching.
+            // Use __getSentenceAtTop (defined in buildJs) which combines caretRangeFromPoint
+            // with data-sentences to find the exact sentence at the top of the current page.
             wv.evaluateJavascript("""
                 (function(){
-                    var el = document.elementFromPoint(window.innerWidth * 0.5, 60);
-                    for (var i = 0; i < 8 && el; i++) {
-                        if (el.dataset && el.dataset.si !== undefined) return el.dataset.si;
-                        el = el.parentElement;
-                    }
-                    return '-1';
+                    var si = window.__getSentenceAtTop
+                        ? window.__getSentenceAtTop(window.innerWidth * 0.5, 60)
+                        : -1;
+                    return si >= 0 ? '' + si : '-1';
                 })()
             """.trimIndent()) { raw ->
                 val si = raw?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
@@ -374,18 +371,78 @@ private fun ReaderContent(
                 NotiBook.onTotalPages(total);
             }
 
-            // ── data-si tracking ──────────────────────────────────────────────
-            // Reports the sentence index at the top of the current page so the
-            // ViewModel can restore position after an orientation change.
-            function reportDataSi() {
-                var el = document.elementFromPoint(w * 0.5, 60);
-                for (var i = 0; i < 8 && el; i++) {
-                    if (el.dataset && el.dataset.si !== undefined) {
-                        NotiBook.onDataSi(parseInt(el.dataset.si));
-                        return;
+            // ── Exact sentence lookup via caretRangeFromPoint + data-sentences ──
+            // Returns the exact sentence index at viewport point (x, y).
+            // Uses caretRangeFromPoint to get the character position, then walks
+            // up the DOM to the nearest block with data-sentences, then uses the
+            // sentence lengths in that attribute to find the exact sentence.
+            // Falls back to data-si walk if data-sentences is not present.
+            window.__getSentenceAtTop = function(x, y) {
+                var range = null;
+                try {
+                    if (document.caretRangeFromPoint) {
+                        range = document.caretRangeFromPoint(x, y);
+                    } else if (document.caretPositionFromPoint) {
+                        var pos = document.caretPositionFromPoint(x, y);
+                        if (pos) {
+                            range = document.createRange();
+                            range.setStart(pos.offsetNode, pos.offset);
+                        }
                     }
-                    el = el.parentElement;
+                } catch(e) {}
+
+                // Walk up to nearest block with data-sentences
+                var node = range ? range.startContainer : document.elementFromPoint(x, y);
+                var blockEl = (node && node.nodeType !== 1) ? node.parentNode : node;
+                var depth = 0;
+                while (blockEl && !blockEl.dataset.sentences && depth < 12) {
+                    blockEl = blockEl.parentElement; depth++;
                 }
+
+                if (!blockEl || !blockEl.dataset.sentences) {
+                    // Fallback: walk up looking for data-si
+                    var el = document.elementFromPoint(x, y);
+                    for (var i = 0; i < 8 && el; i++) {
+                        if (el.dataset && el.dataset.si !== undefined) return parseInt(el.dataset.si);
+                        el = el.parentElement;
+                    }
+                    return -1;
+                }
+
+                // Get char offset within block using TreeWalker
+                var charOffset = 0;
+                if (range && range.startContainer) {
+                    try {
+                        var walker = document.createTreeWalker(
+                            blockEl, NodeFilter.SHOW_TEXT, null, false);
+                        var tn;
+                        while ((tn = walker.nextNode())) {
+                            if (tn === range.startContainer) {
+                                charOffset += range.startOffset; break;
+                            }
+                            charOffset += tn.textContent.length;
+                        }
+                    } catch(e) {}
+                }
+
+                // Find sentence at charOffset using data-sentences
+                var entries = blockEl.dataset.sentences.split(',');
+                var cumLen = 0;
+                for (var i = 0; i < entries.length; i++) {
+                    var parts = entries[i].split(':');
+                    var si = parseInt(parts[0]);
+                    var len = parseInt(parts[1]);
+                    cumLen += len + 1; // +1 for space between sentences
+                    if (charOffset < cumLen) return si;
+                }
+                return parseInt(entries[entries.length - 1].split(':')[0]);
+            };
+
+            // ── data-si tracking ──────────────────────────────────────────────
+            // Reports the exact sentence index at the top of the current page.
+            function reportDataSi() {
+                var si = window.__getSentenceAtTop(w * 0.5, 60);
+                if (si >= 0) NotiBook.onDataSi(si);
             }
 
             // ── Navigate to page instantly (restore/chapter-jump — no animation) ─
@@ -457,6 +514,15 @@ private fun ReaderContent(
                 if (targetPage === 0) reportTotalPages();
             }, 600);
 
+            // ── Chapter page breaks ───────────────────────────────────────────
+            // Force each chapter (except the first) to start on a fresh column.
+            // break-before: column is the CSS multi-column equivalent of page-break-before.
+            var chapterEls = document.querySelectorAll('[id^="chapter-"]');
+            for (var ci = 1; ci < chapterEls.length; ci++) {
+                chapterEls[ci].style.setProperty('break-before',      'column', 'important');
+                chapterEls[ci].style.setProperty('page-break-before', 'always', 'important');
+            }
+
             // ── Fix image sizing via JS (CSS % and vw unreliable in columns) ───
             // Inline styles set via JS have the highest cascade priority.
             function fixImages() {
@@ -518,14 +584,75 @@ private fun ReaderContent(
             b.style.setProperty('height',       h+'px', 'important');
             b.style.setProperty('column-width', w+'px', 'important');
             b.style.setProperty('transition',   'none', 'important');
-            b.style.transform = 'translateX(0px)';
+            // Do NOT reset transform to 0 here — offsetLeft is layout-space (independent of
+            // CSS transform), so we can compute the target page without first jumping to page 0.
+            // Resetting would briefly show page 0 before the correct page is found.
             setTimeout(function(){
                 var targetPage = 0;
-                var si = $si;
-                if (si >= 0) {
-                    var el = document.querySelector('[data-si="'+si+'"]');
-                    if (el) targetPage = Math.floor(el.offsetLeft / w);
+                var restoreSi = $si;
+
+                if (restoreSi >= 0) {
+                    // Find the block containing restoreSi via data-sentences
+                    var allBlocks = document.querySelectorAll('[data-sentences]');
+                    var targetBlock = null, sentenceCharOffset = 0;
+                    for (var bi = 0; bi < allBlocks.length && !targetBlock; bi++) {
+                        var entries = allBlocks[bi].dataset.sentences.split(',');
+                        var cumLen = 0;
+                        for (var ei = 0; ei < entries.length; ei++) {
+                            var parts = entries[ei].split(':');
+                            if (parseInt(parts[0]) === restoreSi) {
+                                targetBlock = allBlocks[bi];
+                                sentenceCharOffset = cumLen;
+                                break;
+                            }
+                            cumLen += parseInt(parts[1]) + 1; // +1 for space between sentences
+                        }
+                    }
+
+                    if (targetBlock) {
+                        // Use a Range at the sentence's char offset to get the viewport position,
+                        // then convert to layout position using the current (stale) body transform.
+                        // This gives sub-paragraph precision even for long multi-page paragraphs.
+                        try {
+                            var walker = document.createTreeWalker(
+                                targetBlock, NodeFilter.SHOW_TEXT, null, false);
+                            var cumLen2 = 0, rangeNode = null, rangeOff = 0, tn;
+                            while ((tn = walker.nextNode())) {
+                                var len = tn.textContent.length;
+                                if (cumLen2 + len > sentenceCharOffset) {
+                                    rangeNode = tn;
+                                    rangeOff = sentenceCharOffset - cumLen2;
+                                    break;
+                                }
+                                cumLen2 += len;
+                            }
+                            if (rangeNode) {
+                                var range = document.createRange();
+                                range.setStart(rangeNode, Math.min(rangeOff, rangeNode.textContent.length));
+                                var rects = range.getClientRects();
+                                if (rects && rects.length > 0) {
+                                    // rects[0].left is viewport-space; add back current translateX
+                                    // magnitude to convert to layout-space, then divide by new colW.
+                                    var match = b.style.transform.match(/translateX\((-?[\d.]+)px\)/);
+                                    var translateMag = match ? Math.abs(parseFloat(match[1])) : 0;
+                                    var layoutX = rects[0].left + translateMag;
+                                    targetPage = Math.max(0, Math.floor(layoutX / w));
+                                } else {
+                                    targetPage = Math.floor(targetBlock.offsetLeft / w);
+                                }
+                            } else {
+                                targetPage = Math.floor(targetBlock.offsetLeft / w);
+                            }
+                        } catch(e) {
+                            targetPage = Math.floor(targetBlock.offsetLeft / w);
+                        }
+                    } else {
+                        // Fallback: find block by data-si
+                        var el = document.querySelector('[data-si="'+restoreSi+'"]');
+                        if (el) targetPage = Math.floor(el.offsetLeft / w);
+                    }
                 }
+
                 window.__currentPage = targetPage;
                 b.style.transform = 'translateX(-'+(targetPage*w)+'px)';
                 if (window.__fixImages) window.__fixImages();

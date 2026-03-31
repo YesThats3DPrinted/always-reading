@@ -22,7 +22,7 @@
    - `NotificationService.kt` — empty stub (foreground service removed entirely)
 
 2. **Book Parsing** (`parsing/`)
-   - `EpubParser.kt` — extracts text from EPUB files, respects `<p>` paragraph boundaries; **planned: also annotate HTML with `data-si` attributes and save annotated files to cache**
+   - `EpubParser.kt` — extracts text from EPUB files, respects `<p>` paragraph boundaries
    - `TxtParser.kt` — reads TXT files, splits on `\n{2,}` for paragraphs
    - `SentenceSplitter.kt` — ICU BreakIterator + abbreviation/number merging + equal-chunk splitting
    - `ParseWorker.kt` — WorkManager task for async parsing without blocking UI
@@ -30,12 +30,12 @@
 3. **EPUB Reader** (`epub/`)
    - `EpubExtractor.kt` — unzips EPUB to app cache dir; uses `File.canonicalPath` (not `absolutePath`) to avoid symlink mismatch between `/data/user/0/` and `/data/data/`
    - `EpubSpineReader.kt` — reads spine order from `content.opf`; uses `canonicalPath`
-   - `EpubCombiner.kt` — merges all spine chapters into one HTML document, absolutizes `src` and `href` attrs; **planned: read annotated HTML files instead of raw files**
+   - `EpubCombiner.kt` — merges all spine chapters into one HTML document, absolutizes `src` and `href` attrs; injects sentence-level `data-si` sentinel spans
    - `SpineItem.kt` — data class: `(chapterTitle, htmlFile, canonicalPath)`
 
 4. **In-App Reader** (`ui/reader/`)
-   - `EpubReaderScreen.kt` — WebView-based reader; CSS columns pagination (planned); tap zones (left 30% prev, right 30% next, center toggle bar); swipe detection; JS bridge callbacks
-   - `EpubReaderViewModel.kt` — manages reader state; `currentPageIndex`, `totalPages`, `topBarVisible`; `closeWithPosition(pageIndex, totalPages, visibleText, startNotification)`; `restorePage` uses `book.readerSpineIndex` (repurposed as page index)
+   - `EpubReaderScreen.kt` — WebView-based reader; CSS columns pagination; tap/swipe navigation; JS bridge; orientation-change overlay + re-init
+   - `EpubReaderViewModel.kt` — manages reader state; `currentPageIndex`, `totalPages`, `topBarVisible`; `restoreSentenceIndex` for orientation restore; `closeWithPosition` saves exact sentence via `caretRangeFromPoint`
    - `ReaderPreferences.kt` — SharedPreferences wrapper; stores `fontSize` (12–28, step 2)
 
 5. **Database** (`data/db/`)
@@ -209,36 +209,48 @@ On Android, `/data/user/0/com.notibook.app/` is a symlink to `/data/data/com.not
 
 ### 10. In-App Reader — Pagination Architecture
 
-**Current (partial):** Viewport-height slicing — one long HTML document, pages = `scrollY / height`. Text bleeds across page boundaries (a line visible at top of page N is the last line from page N-1).
-
-**Planned: CSS columns pagination** (same technique used by Readium, Apple Books, Kobo):
+**Current:** CSS columns pagination — one combined HTML document, body laid out as CSS columns each exactly one viewport wide.
 ```css
 body {
-  height: 100vh;
-  column-width: 100vw;
+  column-width: <viewportWidth>px;  /* set by JS from Android-measured dimensions */
   column-gap: 0;
   column-fill: auto;
-  overflow: hidden;
+  overflow: visible;                 /* body expands; html clips */
 }
 ```
 - Browser handles all text flow and page breaks — never cuts mid-line
-- Navigation: `translateX(-pageIndex * 100vw)`
-- Total pages: `body.scrollWidth / window.innerWidth`
-- Font size changes: browser reflows automatically, just recalculate total pages
+- Navigation: `translateX(-pageIndex * colW)` with 0.25s ease animation
+- Total pages: `body.scrollWidth / colW`
+- Font size changes: CSS re-injected, total pages recalculated
+- Orientation changes: `configChanges` prevents Activity restart; `addOnLayoutChangeListener` detects width change, shows opaque overlay, runs `buildReinitJs` to update column dimensions and restore position, hides overlay via `NotiBook.onReady()`
 
 ---
 
-### 11. Position Tracking — Parse-Time HTML Annotation (Planned)
+### 11. Position Tracking — Sentence-Level Sentinel Spans
 
-**Problem:** Mapping "which page are you on" to "which sentence index" is imprecise with text matching (same text can appear multiple times) and inaccurate with linear approximation (text density varies).
+**Problem:** Paragraph-level `data-si` on `<p>` elements is too coarse. A long paragraph can span many pages; closing the reader mid-paragraph jumps the notification back to the paragraph's first sentence.
 
-**Solution:** During `EpubParser`, annotate each block element with the index of the first sentence it contains:
+**Solution:** `EpubCombiner` inserts a zero-width sentinel `<span>` at the **start of each sentence** within each paragraph:
 ```html
-<p data-si="1042">She walked into the room. Their eyes met.</p>
+<p>
+  <span data-si="1042"></span>She walked into the room.
+  <span data-si="1043"></span>Their eyes met.
+  <span data-si="1044"></span>The silence was unbearable.
+</p>
 ```
-Save annotated HTML as `ch01.annotated.html` alongside extracted EPUB files. `EpubCombiner` reads annotated files. At reader close, JS does `elementFromPoint(cx, cy)` → walk up DOM → `data-si` value = exact sentence index. No text matching, no approximation.
+- Sentinels are inline, zero-width — no visual effect, no layout impact
+- `elementFromPoint(w/2, top)` → walk up DOM → finds the nearest preceding sentinel → exact sentence index
+- If a sentence spans a page boundary, `elementFromPoint` at the top of the next page finds the NEXT sentence's sentinel — correct behaviour, since that is the first complete sentence visible
 
-**Granularity:** Paragraph-level (not sentence-level). If sentences 1042 and 1043 are in the same `<p>`, the element is annotated with 1042. This is accurate enough — position is off by at most a few sentences within a paragraph.
+**Reader position restore (orientation change):**
+- `caretRangeFromPoint(w/2, top)` returns the exact character at the top of the current page
+- Walk up to the enclosing `data-si` sentinel → sentence index + char offset within sentence
+- After column re-init: find the sentinel span by `data-si`, advance `charOffset` characters into it, compute its new `offsetLeft / colW` → navigate to that page
+- Worst-case drift after orientation change: fraction of one sentence — imperceptible
+
+**Chapter page breaks:**
+- Every chapter div (except the first) gets `break-before: column` so chapters always start on a fresh page
+- Applied in JS after page load: `document.querySelectorAll('[id^="chapter-"]')` → set style on indices 1+
 
 ---
 
@@ -351,12 +363,11 @@ NotiBook/
 
 ## Planned Next Work (in order)
 
-1. **DB migration 2→3:** Add `type` to `SentenceEntity`; remove `readerScrollPercent` from `BookEntity`
-2. **EpubParser — HTML annotation:** Add `data-si="N"` to block elements during parsing; emit IMAGE/TABLE/DIVIDER entries; save `.annotated.html` files to cache
-3. **EpubCombiner — read annotated files:** Use `.annotated.html` if present, fall back to raw
-4. **EpubReaderScreen — CSS columns:** Replace viewport-height slicing with CSS columns; `translateX` navigation; total pages from `scrollWidth`
-5. **EpubReaderViewModel — exact sentence index:** Drop text prefix matching; JS returns `data-si` value at close
-6. **Cleanup:** Remove `findSentenceByTextPrefix` from DAO/repository; remove `readerScrollPercent` usages
+1. **EpubCombiner — sentence-level sentinel spans:** Replace paragraph-level `data-si` on `<p>` elements with zero-width `<span data-si="N"></span>` at the start of each sentence within each paragraph. Requires mapping DB sentence texts back to positions in the HTML paragraph content.
+2. **EpubReaderScreen — fix flash to page 0 on orientation change:** Remove the `b.style.transform = 'translateX(0px)'` line from `buildReinitJs`; the transform reset is unnecessary (offsetLeft is layout-space, not viewport-space) and causes a brief flash to page 0 before the correct page is found.
+3. **EpubReaderScreen — caretRangeFromPoint for orientation restore:** Replace `data-si` paragraph lookup in `buildReinitJs` with `caretRangeFromPoint` + char offset within the sentence span, for sub-sentence precision across orientation changes.
+4. **EpubReaderScreen — chapter page breaks:** Apply `break-before: column` to all chapter divs except the first so each chapter starts on a fresh page.
+5. **DB migration 2→3:** Add `type` to `SentenceEntity` (SENTENCE/IMAGE/TABLE/DIVIDER); remove `readerScrollPercent` from `BookEntity`.
 
 ---
 
@@ -399,12 +410,13 @@ adb logcat -s NotiBook
 
 ## Known Limitations
 
-1. **Text bleeds at page boundaries** — viewport-height slicing cuts lines mid-display. Fix: CSS columns (planned).
-2. **Position tracking imprecise** — text prefix matching is fragile; `data-si` annotation will fix this (planned).
-3. **No scrolling in expanded notification** — RemoteViews whitelist excludes ScrollView. Long segments capped at 8 lines.
-4. **No custom collapsed layout** — collapsed state uses Android's standard template (no arrows).
-5. **Notification lifespan** — no foreground service means system can kill under memory pressure. Intentional trade-off.
-6. **Re-import required after parser changes** — DB stores pre-parsed sentences; no auto-migration.
+1. **Position tracking coarse** — `data-si` currently on paragraph-level; sentence-level sentinel spans planned (see Planned Next Work).
+2. **Orientation change flash** — brief flash to page 0 before correct page found; fix pending (remove translateX reset from buildReinitJs).
+3. **Chapters don't start on new pages** — chapter page breaks planned.
+4. **No scrolling in expanded notification** — RemoteViews whitelist excludes ScrollView. Long segments capped at 8 lines.
+5. **No custom collapsed layout** — collapsed state uses Android's standard template (no arrows).
+6. **Notification lifespan** — no foreground service means system can kill under memory pressure. Intentional trade-off.
+7. **Re-import required after parser changes** — DB stores pre-parsed sentences; no auto-migration.
 
 ---
 

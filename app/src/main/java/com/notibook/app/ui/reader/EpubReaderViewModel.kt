@@ -154,10 +154,14 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun buildTxtHtml(content: String, sentences: List<SentenceEntity>): String {
-        // Build blockIndex → first sentenceIndex mapping (same logic as EpubCombiner)
+        // Build blockIndex → sentence list mapping (mirrors EpubCombiner logic)
         val blockToFirstSi: Map<Int, Int> = sentences
             .groupBy { it.blockIndex }
             .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
+        val blockToSentences: Map<Int, List<com.notibook.app.data.db.SentenceEntity>> = sentences
+            .filter { it.type != "DIVIDER" }
+            .groupBy { it.blockIndex }
+            .mapValues { (_, s) -> s.sortedBy { it.sentenceIndex } }
 
         val fontSize = prefs.fontSize
         val initialCss = """
@@ -180,8 +184,12 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             append("</head><body>")
             paragraphs.forEachIndexed { idx, para ->
                 val si = blockToFirstSi[idx]
+                val blockSentences = blockToSentences[idx]
                 val siAttr = if (si != null) " data-si=\"$si\"" else ""
-                append("<p$siAttr>")
+                val sentAttr = if (!blockSentences.isNullOrEmpty())
+                    " data-sentences=\"${blockSentences.joinToString(",") { "${it.sentenceIndex}:${it.text.trim().length}" }}\""
+                else ""
+                append("<p$siAttr$sentAttr>")
                 append(
                     para.trim()
                         .replace("&", "&amp;")

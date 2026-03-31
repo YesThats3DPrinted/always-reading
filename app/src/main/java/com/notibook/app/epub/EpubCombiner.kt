@@ -89,23 +89,32 @@ object EpubCombiner {
                             }
                         }
 
-                        // ── Annotate block elements with data-si ──────────────────────
-                        // Build a map from blockIndex → first sentenceIndex for this spine item.
-                        // Uses the same BLOCK_SELECTOR as EpubParser, so Nth element here
-                        // has the same blockIndex as EpubParser assigned.
+                        // ── Annotate block elements with sentence position data ────────
+                        // Each block element gets:
+                        //   data-si="N"              — sentenceIndex of first sentence (fallback)
+                        //   data-sentences="N:L,..."  — all sentences as "index:textLength" pairs
+                        //
+                        // data-sentences allows JS to find the exact sentence at any character
+                        // offset within the block (via caretRangeFromPoint), giving sentence-level
+                        // precision for both notification position and orientation restore.
+                        // DIVIDER sentences are excluded (they are skipped in notifications).
                         val sentences = sentencesBySpineIndex[index]
                         if (!sentences.isNullOrEmpty()) {
-                            val blockToSentenceIndex: Map<Int, Int> = sentences
+                            val blockToSentences: Map<Int, List<SentenceEntity>> = sentences
+                                .filter { it.type != "DIVIDER" }
                                 .groupBy { it.blockIndex }
-                                .mapValues { (_, s) ->
-                                    s.minByOrNull { it.sentenceIndex }!!.sentenceIndex
-                                }
+                                .mapValues { (_, s) -> s.sortedBy { it.sentenceIndex } }
 
                             val body = doc.body() ?: doc
                             val blocks = body.select(BLOCK_SELECTOR)
                             blocks.forEachIndexed { blockIdx, el ->
-                                val si = blockToSentenceIndex[blockIdx]
-                                if (si != null) el.attr("data-si", si.toString())
+                                val blockSentences = blockToSentences[blockIdx]
+                                if (!blockSentences.isNullOrEmpty()) {
+                                    el.attr("data-si", blockSentences.first().sentenceIndex.toString())
+                                    el.attr("data-sentences", blockSentences.joinToString(",") {
+                                        "${it.sentenceIndex}:${it.text.trim().length}"
+                                    })
+                                }
                             }
                         }
 
