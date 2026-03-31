@@ -16,8 +16,8 @@ data class EpubMetadata(
 
 data class EpubParseResult(
     val metadata: EpubMetadata,
-    /** Each pair is (sentenceText, chapterTitle). */
-    val sentences: List<Pair<String, String>>
+    /** Each triple is (sentenceText, chapterTitle, spineItemIndex). */
+    val sentences: List<Triple<String, String, Int>>
 )
 
 /**
@@ -62,13 +62,13 @@ object EpubParser {
         val coverPath = extractCover(context, zip, opfDir, coverItemId, bookId)
 
         // ── 5. Parse spine items → sentences ────────────────────────────────
-        val allSentences = mutableListOf<Pair<String, String>>()
-        for (href in spineHrefs) {
+        val allSentences = mutableListOf<Triple<String, String, Int>>()
+        for ((spineIndex, href) in spineHrefs.withIndex()) {
             val key = if (opfDir.isEmpty()) href else "$opfDir/$href"
             val htmlBytes = zip[key] ?: zip[href] ?: continue
             val html = htmlBytes.toString(Charsets.UTF_8)
             val (chapterTitle, sentences) = parseHtmlChapter(html)
-            sentences.forEach { allSentences.add(it to chapterTitle) }
+            sentences.forEach { allSentences.add(Triple(it, chapterTitle, spineIndex)) }
         }
 
         return EpubParseResult(

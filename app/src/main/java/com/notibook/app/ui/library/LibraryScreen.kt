@@ -26,7 +26,7 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
-    onBookClick: (Long) -> Unit,
+    onBookClick: (bookId: Long) -> Unit,
     vm: LibraryViewModel = viewModel()
 ) {
     val books by vm.books.collectAsState()
@@ -70,7 +70,10 @@ fun LibraryScreen(
                     .padding(padding)
             ) {
                 items(books, key = { it.id }) { book ->
-                    BookCard(book = book, onClick = { onBookClick(book.id) })
+                    BookCard(
+                        book = book,
+                        onClick = { onBookClick(book.id) }
+                    )
                 }
             }
         }

@@ -20,5 +20,13 @@ data class BookEntity(
     /** Chapter name of the current sentence (may be blank). */
     val currentChapter: String = "",
     /** Whether the notification is currently active (shown in the shade). */
-    val notificationActive: Boolean = false
+    val notificationActive: Boolean = false,
+
+    // ── In-app reader position ───────────────────────────────────────────────
+    /** 0-based index of the spine item currently open in the EPUB reader. */
+    val readerSpineIndex: Int = 0,
+    /** Scroll position within the current spine item (0.0 = top, 1.0 = bottom). */
+    val readerScrollPercent: Float = 0f,
+    /** True if the notification was active when the reader was opened (so we can restore it on close). */
+    val notifWasActiveBeforeReader: Boolean = false
 )

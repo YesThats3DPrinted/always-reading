@@ -13,20 +13,24 @@ import com.notibook.app.notification.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class NotiBookApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
     val repository: BookRepository by lazy {
-        BookRepository(database.bookDao(), database.sentenceDao())
+        BookRepository(database.bookDao(), database.sentenceDao(), this)
     }
 
     companion object {
         const val NOTIFICATION_CHANNEL_ID = "notibook_persistent"
     }
 
-    private val appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    /** Used to communicate a notification-tap bookId to AppNavigation when the app is already open. */
+    val pendingOpenBookId = MutableStateFlow(-1L)
+
+    val appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()

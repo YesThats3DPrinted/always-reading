@@ -13,5 +13,7 @@ data class SentenceEntity(
     val bookId: Long,
     val sentenceIndex: Int,
     val text: String,
-    val chapter: String = ""
+    val chapter: String = "",
+    /** 0-based index of the EPUB spine item this sentence belongs to (0 for TXT). */
+    val spineItemIndex: Int = 0
 )

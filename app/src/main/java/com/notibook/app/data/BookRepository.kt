@@ -1,14 +1,17 @@
 package com.notibook.app.data
 
+import android.content.Context
 import com.notibook.app.data.db.BookDao
 import com.notibook.app.data.db.BookEntity
 import com.notibook.app.data.db.SentenceDao
 import com.notibook.app.data.db.SentenceEntity
+import com.notibook.app.epub.EpubExtractor
 import kotlinx.coroutines.flow.Flow
 
 class BookRepository(
     private val bookDao: BookDao,
-    private val sentenceDao: SentenceDao
+    private val sentenceDao: SentenceDao,
+    private val context: Context
 ) {
     fun getAllBooks(): Flow<List<BookEntity>> = bookDao.getAllBooks()
 
@@ -25,6 +28,7 @@ class BookRepository(
     suspend fun deleteBook(book: BookEntity) {
         sentenceDao.deleteByBookId(book.id)
         bookDao.deleteById(book.id)
+        EpubExtractor.clearCache(context, book.id)
     }
 
     suspend fun updatePosition(bookId: Long, index: Int, chapter: String) =
@@ -44,4 +48,19 @@ class BookRepository(
 
     suspend fun getSentence(bookId: Long, index: Int): SentenceEntity? =
         sentenceDao.getSentence(bookId, index)
+
+    suspend fun getSentencesForChapter(bookId: Long, chapter: String): List<SentenceEntity> =
+        sentenceDao.getSentencesForChapter(bookId, chapter)
+
+    suspend fun getSentencesForSpineItem(bookId: Long, spineItemIndex: Int): List<SentenceEntity> =
+        sentenceDao.getSentencesForSpineItem(bookId, spineItemIndex)
+
+    suspend fun findSentenceByTextPrefix(bookId: Long, prefix: String): SentenceEntity? =
+        sentenceDao.findByTextPrefix(bookId, prefix)
+
+    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int, scrollPct: Float) =
+        bookDao.updateReaderPosition(bookId, spineIndex, scrollPct)
+
+    suspend fun updateNotifWasActive(bookId: Long, was: Boolean) =
+        bookDao.updateNotifWasActive(bookId, was)
 }

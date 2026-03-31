@@ -101,7 +101,7 @@ object NotificationHelper {
         setInt(R.id.btn_prev, "setColorFilter", textColor)
         setInt(R.id.btn_next, "setColorFilter", textColor)
 
-        setOnClickPendingIntent(R.id.tv_notification_title, makeOpenAppIntent(context))
+        setOnClickPendingIntent(R.id.tv_notification_title, makeOpenAppIntent(context, bookId))
 
         wireNavigation(context, bookId, isFirst, isLast, iconAlpha, iconAlphaFaint, textColorFaint)
     }
@@ -138,12 +138,13 @@ object NotificationHelper {
         }
     }
 
-    private fun makeOpenAppIntent(context: Context): PendingIntent {
+    private fun makeOpenAppIntent(context: Context, bookId: Long): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(NotificationActionReceiver.EXTRA_BOOK_ID, bookId)
         }
         return PendingIntent.getActivity(
-            context, 0, intent,
+            context, bookId.toInt(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }

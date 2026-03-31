@@ -31,8 +31,9 @@ class ParseWorker(
                 return Result.failure()
             }
 
-            // Parse into (sentenceText, chapterTitle) pairs
-            val rawSentences: List<Pair<String, String>> = when {
+            // Parse into (sentenceText, chapterTitle, spineItemIndex) triples.
+            // TXT files use Pair<String,String> — we lift them to triples with spineItemIndex=0.
+            val rawSentences: List<Triple<String, String, Int>> = when {
                 book.filePath.endsWith(".epub", ignoreCase = true) -> {
                     val result = EpubParser.parse(context, file, bookId)
                     // Update title/author/cover from EPUB metadata if they were guessed
@@ -47,7 +48,7 @@ class ParseWorker(
                     result.sentences
                 }
                 book.filePath.endsWith(".txt", ignoreCase = true) -> {
-                    TxtParser.parse(file)
+                    TxtParser.parse(file).map { (text, chapter) -> Triple(text, chapter, 0) }
                 }
                 else -> {
                     repo.markParsingComplete(bookId, 0)
@@ -57,13 +58,14 @@ class ParseWorker(
 
             // Insert sentences in batches, updating progress count after each batch
             val buffer = mutableListOf<SentenceEntity>()
-            rawSentences.forEachIndexed { index, (text, chapter) ->
+            rawSentences.forEachIndexed { index, (text, chapter, spineItemIndex) ->
                 buffer.add(
                     SentenceEntity(
                         bookId = bookId,
                         sentenceIndex = index,
                         text = text,
-                        chapter = chapter
+                        chapter = chapter,
+                        spineItemIndex = spineItemIndex
                     )
                 )
                 if (buffer.size >= BATCH_SIZE) {
