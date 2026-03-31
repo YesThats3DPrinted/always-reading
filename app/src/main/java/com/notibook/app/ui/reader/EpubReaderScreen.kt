@@ -56,10 +56,15 @@ fun EpubReaderScreen(
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // CSS-columns pagination: use window.__colW (set by buildJs) — same value used for column-width
+    // CSS-columns pagination: animate the slide, use __colW for exact column alignment
     LaunchedEffect(currentPageIndex) {
         webViewRef.value?.evaluateJavascript(
-            "(function(){var cw=window.__colW||window.innerWidth;window.__currentPage=$currentPageIndex;document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';})()",
+            """(function(){
+                var cw=window.__colW||window.innerWidth;
+                window.__currentPage=$currentPageIndex;
+                document.body.style.setProperty('transition','transform 0.25s ease','important');
+                document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';
+            })()""",
             null
         )
     }
@@ -288,11 +293,19 @@ private fun ReaderContent(
         append(" margin: 0 !important; padding: 0 !important;")
         append(" overflow: visible !important;")
         append(" column-gap: 0px !important; column-fill: auto !important;")
+        append(" text-align: left !important;")
         append(" font-size: ${fontSize}px !important;")
         append(" font-family: serif !important;")
         append(" line-height: 1.6 !important; }")
-        append(" img { color: transparent !important; width: auto !important; height: auto !important;")
-        append(" max-height: 80vh !important; object-fit: contain !important; }")
+        // Use vw/vh (viewport units) not % for max-width/max-height on images.
+        // In Android WebView CSS columns, the containing block for elements in
+        // overflow columns resolves to 0px, so max-width:100% collapses images to 0×0.
+        // Viewport units are always based on the actual viewport size, never 0.
+        append(" img { max-width: 100vw !important; width: auto !important;")
+        append(" height: auto !important; max-height: 100vh !important;")
+        append(" break-inside: avoid !important; page-break-inside: avoid !important; }")
+        // Zero out browser default figure margins (40px each side) so images sit flush
+        append(" figure { margin: 0 !important; padding: 0 !important; }")
         append(" table { width: 100% !important; }")
         append(" pre, code { white-space: pre-wrap !important; }")
     }
@@ -333,9 +346,10 @@ private fun ReaderContent(
                 NotiBook.onTotalPages(total);
             }
 
-            // ── Navigate to page (transform body left by page * width) ────────
+            // ── Navigate to page instantly (restore/chapter-jump — no animation) ─
             function goToPage(page) {
                 window.__currentPage = page;
+                document.body.style.setProperty('transition', 'none', 'important');
                 document.body.style.transform = 'translateX(-' + (page * w) + 'px)';
             }
 
@@ -398,6 +412,36 @@ private fun ReaderContent(
                 tryRestore();
                 if (targetPage === 0) reportTotalPages();
             }, 600);
+
+            // ── Fix image sizing via JS (CSS % and vw unreliable in columns) ───
+            // Inline styles set via JS have the highest cascade priority.
+            function fixImages() {
+                var cw = window.__colW || window.innerWidth || $w;
+                var imgs = document.querySelectorAll('img');
+                for (var i = 0; i < imgs.length; i++) {
+                    var img = imgs[i];
+                    if (img.naturalWidth <= 0) continue;
+                    if (img.naturalWidth >= cw) {
+                        // Large image: scale down to fit column, make block-level
+                        var scale = cw / img.naturalWidth;
+                        var pw = Math.round(img.naturalWidth  * scale);
+                        var ph = Math.round(img.naturalHeight * scale);
+                        img.style.setProperty('display', 'block',       'important');
+                        img.style.setProperty('width',   pw + 'px',     'important');
+                        img.style.setProperty('height',  ph + 'px',     'important');
+                        img.style.setProperty('max-width',  pw + 'px',  'important');
+                        img.style.setProperty('max-height', ph + 'px',  'important');
+                    } else {
+                        // Small / inline image: keep natural size but ensure visibility.
+                        // Don't force display:block — it may be an inline decorator in a <span>.
+                        img.style.setProperty('width',  img.naturalWidth  + 'px', 'important');
+                        img.style.setProperty('height', img.naturalHeight + 'px', 'important');
+                    }
+                }
+            }
+            // Run once after layout, then again after images fully load
+            setTimeout(fixImages, 800);
+            window.addEventListener('load', fixImages);
         })();
     """.trimIndent()
 
@@ -437,8 +481,12 @@ private fun ReaderContent(
                     setSupportZoom(false)
                     useWideViewPort     = false   // never use 980px desktop viewport
                     loadWithOverviewMode = false  // never scale page to fit
+                    // loadDataWithBaseURL with file:// base can get a null security origin
+                    // on some Android versions; these flags let it load local EPUB images.
                     @Suppress("DEPRECATION")
-                    allowFileAccessFromFileURLs = false
+                    allowFileAccessFromFileURLs = true
+                    @Suppress("DEPRECATION")
+                    allowUniversalAccessFromFileURLs = true
                 }
 
                 addJavascriptInterface(object {
@@ -453,6 +501,28 @@ private fun ReaderContent(
                 }, "NotiBook")
 
                 webViewClient = object : WebViewClient() {
+                    // Intercept all file:// sub-resource requests (images, CSS, fonts) and
+                    // serve bytes directly — bypasses any WebView security origin checks that
+                    // might silently block file:// images loaded from a file:// page.
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: android.webkit.WebResourceRequest
+                    ): android.webkit.WebResourceResponse? {
+                        val url = request.url
+                        if (url.scheme == "file") {
+                            val path = url.path ?: return null
+                            return try {
+                                val file = java.io.File(path)
+                                if (file.exists() && file.isFile) {
+                                    val mime = java.net.URLConnection.guessContentTypeFromName(file.name)
+                                        ?: "application/octet-stream"
+                                    android.webkit.WebResourceResponse(mime, null, file.inputStream())
+                                } else null
+                            } catch (_: Exception) { null }
+                        }
+                        return null
+                    }
+
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         val url = request.url.toString()
                         if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -514,7 +584,14 @@ private fun ReaderContent(
         update = { wv ->
             if (!isLoaded) {
                 isLoaded = true
-                wv.loadDataWithBaseURL(baseUrl, combinedHtml, "text/html", "UTF-8", null)
+                // EPUB books: combinedHtml is written to a real file and baseUrl is that
+                // file's file:// URL — gives a genuine origin so images load correctly.
+                // TXT books: combinedHtml is non-empty and loaded via loadDataWithBaseURL.
+                if (combinedHtml.isEmpty()) {
+                    wv.loadUrl(baseUrl)
+                } else {
+                    wv.loadDataWithBaseURL(baseUrl, combinedHtml, "text/html", "UTF-8", null)
+                }
             }
         },
         modifier = Modifier

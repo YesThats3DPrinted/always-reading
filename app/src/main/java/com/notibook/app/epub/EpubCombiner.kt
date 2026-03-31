@@ -32,9 +32,11 @@ object EpubCombiner {
         html { height: 100%; overflow: hidden; clip-path: inset(0); }
         body { background: #1A1A1A !important; color: #E0E0E0 !important;
                margin: 0; padding: 0; overflow: visible;
-               column-gap: 0; column-fill: auto;
+               column-gap: 0; column-fill: auto; text-align: left;
                font-size: ${fontSize}px; font-family: serif; line-height: 1.6; }
-        img { color: transparent !important; width: auto; height: auto; max-height: 80vh; object-fit: contain; }
+        img { max-width: 100vw; width: auto; height: auto; max-height: 100vh;
+              break-inside: avoid; page-break-inside: avoid; }
+        figure { margin: 0; padding: 0; }
         table { width: 100%; }
         pre, code { white-space: pre-wrap; }
     """.trimIndent().replace("\n", " ")

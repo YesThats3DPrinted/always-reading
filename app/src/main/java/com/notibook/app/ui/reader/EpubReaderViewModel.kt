@@ -99,13 +99,22 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems, sentencesBySpineIndex, prefs.fontSize)
+
+        // Write the combined HTML to a real file so WebView loads it via file:// URL.
+        // loadDataWithBaseURL with a file:// base can get a null security origin on
+        // Android 10+, silently blocking all file:// image/CSS resource loads.
+        // Loading from an actual file gives the page a genuine file:// origin.
+        val htmlFile = withContext(Dispatchers.IO) {
+            File(cacheDir.canonicalFile, "__reader.html").also { it.writeText(combinedHtml) }
+        }
+
         val restorePage  = book.readerSpineIndex
         _currentPageIndex.value = restorePage
         _state.value = ReaderState.Ready(
             bookTitle        = book.title,
             spineItems       = spineItems,
-            combinedHtml     = combinedHtml,
-            baseUrl          = "file://${cacheDir.absolutePath}/",
+            combinedHtml     = "",                               // unused — loading from file
+            baseUrl          = "file://${htmlFile.canonicalPath}",
             restorePageIndex = restorePage
         )
         onReaderOpened(book.notificationActive)
@@ -242,10 +251,12 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     fun onPrevPage() {
         _currentPageIndex.value = (_currentPageIndex.value - 1).coerceAtLeast(0)
+        _topBarVisible.value = false
     }
 
     fun onNextPage() {
         _currentPageIndex.value = (_currentPageIndex.value + 1).coerceAtMost(_totalPages.value - 1)
+        _topBarVisible.value = false
     }
 
     fun onCenterTap() {
