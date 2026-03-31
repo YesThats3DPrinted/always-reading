@@ -445,32 +445,16 @@ private fun ReaderContent(
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
+                        // The HTML already contains #__content and <style id="__nb_css">.
+                        // Just update the style with the full CSS (includes exact font size)
+                        // and then run the interaction JS.
                         val css     = cssRef.value
                         val js      = jsRef.value
                         val escaped = css.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-                        // Inject CSS style tag and wrap body content in #__content column div
-                        view.evaluateJavascript("""
-                            (function(){
-                                // Inject CSS
-                                var s = document.getElementById('__nb_css');
-                                if (!s) {
-                                    s = document.createElement('style');
-                                    s.id = '__nb_css';
-                                    document.head.appendChild(s);
-                                }
-                                s.textContent = '$escaped';
-
-                                // Wrap body children in #__content if not already done
-                                if (!document.getElementById('__content')) {
-                                    var div = document.createElement('div');
-                                    div.id = '__content';
-                                    while (document.body.firstChild) {
-                                        div.appendChild(document.body.firstChild);
-                                    }
-                                    document.body.appendChild(div);
-                                }
-                            })();
-                        """.trimIndent(), null)
+                        view.evaluateJavascript(
+                            "(function(){var s=document.getElementById('__nb_css');if(s)s.textContent='$escaped';})()",
+                            null
+                        )
                         view.evaluateJavascript(js, null)
                     }
                 }

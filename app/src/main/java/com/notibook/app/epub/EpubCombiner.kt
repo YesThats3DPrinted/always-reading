@@ -20,12 +20,35 @@ import java.io.File
  */
 object EpubCombiner {
 
+    /**
+     * Initial CSS embedded directly in the HTML so the page has correct styling
+     * the instant it loads — prevents white flash and blank-screen glitch.
+     * The full CSS (with exact font size) is re-injected by JS after onPageFinished.
+     */
+    private fun initialCss(fontSize: Int) = """
+        html, body { background: #1A1A1A !important; color: #E0E0E0 !important;
+                     margin: 0; padding: 0; overflow: hidden; height: 100%; }
+        #__content  { height: 100vh; padding: 56px 16px 16px 16px;
+                      box-sizing: border-box; column-width: 100vw;
+                      column-gap: 0; column-fill: auto; font-size: ${fontSize}px;
+                      font-family: serif; line-height: 1.6; }
+        * { max-width: 100%; box-sizing: border-box; }
+        a { color: #7CB9E8; }
+        img { width: auto; height: auto; max-height: 80vh; object-fit: contain; }
+        table { width: 100%; }
+        pre, code { white-space: pre-wrap; word-break: break-word; }
+    """.trimIndent().replace("\n", " ")
+
     suspend fun buildCombinedHtml(
         spineItems: List<SpineItem>,
-        sentencesBySpineIndex: Map<Int, List<SentenceEntity>> = emptyMap()
+        sentencesBySpineIndex: Map<Int, List<SentenceEntity>> = emptyMap(),
+        fontSize: Int = 16
     ): String = withContext(Dispatchers.IO) {
         buildString {
-            append("<html><head><meta charset='UTF-8'></head><body>")
+            append("<html><head><meta charset='UTF-8'>")
+            append("<style id='__nb_css'>")
+            append(initialCss(fontSize))
+            append("</style></head><body><div id='__content'>")
             for ((index, item) in spineItems.withIndex()) {
                 append("\n<div id=\"chapter-$index\">")
                 val file = File(item.absolutePath)
@@ -91,7 +114,7 @@ object EpubCombiner {
                 }
                 append("\n</div>")
             }
-            append("\n</body></html>")
+            append("\n</div></body></html>")
         }
     }
 }

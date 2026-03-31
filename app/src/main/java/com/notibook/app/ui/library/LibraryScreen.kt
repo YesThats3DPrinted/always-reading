@@ -1,13 +1,18 @@
 package com.notibook.app.ui.library
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -16,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,22 +35,42 @@ fun LibraryScreen(
     onBookClick: (bookId: Long) -> Unit,
     vm: LibraryViewModel = viewModel()
 ) {
-    val books by vm.books.collectAsState()
+    val books         by vm.books.collectAsState()
+    val selectedIds   by vm.selectedIds.collectAsState()
+    val isSelectionMode by vm.isSelectionMode.collectAsState()
+
+    // Back press exits selection mode instead of navigating back
+    BackHandler(enabled = isSelectionMode) { vm.clearSelection() }
 
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { vm.importBook(it) } }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("NotiBook") }) },
-        floatingActionButton = {
-            FloatingActionButton(onClick = {
-                filePicker.launch(
-                    // Offer common MIME types; the "*/*" fallback covers .epub on picky devices
-                    arrayOf("application/epub+zip", "text/plain", "*/*")
+        topBar = {
+            if (isSelectionMode) {
+                TopAppBar(
+                    title = { Text("${selectedIds.size} selected") },
+                    actions = {
+                        TextButton(onClick = { vm.selectAll() }) {
+                            Text("Select all")
+                        }
+                        IconButton(onClick = { vm.deleteSelected() }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete selected")
+                        }
+                    }
                 )
-            }) {
-                Icon(Icons.Default.Add, contentDescription = "Import book")
+            } else {
+                TopAppBar(title = { Text("NotiBook") })
+            }
+        },
+        floatingActionButton = {
+            if (!isSelectionMode) {
+                FloatingActionButton(onClick = {
+                    filePicker.launch(arrayOf("application/epub+zip", "text/plain", "*/*"))
+                }) {
+                    Icon(Icons.Default.Add, contentDescription = "Import book")
+                }
             }
         }
     ) { padding ->
@@ -58,7 +84,7 @@ fun LibraryScreen(
                 Text(
                     "No books yet.\nTap + to import an EPUB or TXT file.",
                     style = MaterialTheme.typography.bodyLarge,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
             }
         } else {
@@ -70,9 +96,16 @@ fun LibraryScreen(
                     .padding(padding)
             ) {
                 items(books, key = { it.id }) { book ->
+                    val isSelected = book.id in selectedIds
                     BookCard(
-                        book = book,
-                        onClick = { onBookClick(book.id) }
+                        book            = book,
+                        isSelectionMode = isSelectionMode,
+                        isSelected      = isSelected,
+                        onClick = {
+                            if (isSelectionMode) vm.toggleSelection(book.id)
+                            else onBookClick(book.id)
+                        },
+                        onLongClick = { vm.toggleSelection(book.id) }
                     )
                 }
             }
@@ -80,17 +113,49 @@ fun LibraryScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BookCard(book: BookEntity, onClick: () -> Unit) {
+private fun BookCard(
+    book: BookEntity,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surface
+        )
     ) {
-        Row(modifier = Modifier.padding(12.dp)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
 
-            // Cover thumbnail (or a plain coloured placeholder)
+            // Selection checkbox (only visible in selection mode)
+            if (isSelectionMode) {
+                Icon(
+                    imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                    contentDescription = if (isSelected) "Selected" else "Not selected",
+                    tint = if (isSelected)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .padding(end = 4.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+
+            // Cover thumbnail
             if (book.coverPath != null) {
                 AsyncImage(
                     model = File(book.coverPath),
@@ -128,7 +193,6 @@ private fun BookCard(book: BookEntity, onClick: () -> Unit) {
                 if (book.isParsing) {
                     Text("Parsing…", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(4.dp))
-                    // Show determinate progress once we have a sentence count to work with
                     if (book.parsedSentenceCount > 0) {
                         val approxTotal = (book.parsedSentenceCount * 1.2f).coerceAtLeast(1f)
                         LinearProgressIndicator(

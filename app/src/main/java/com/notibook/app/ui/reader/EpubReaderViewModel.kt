@@ -98,7 +98,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems, sentencesBySpineIndex)
+        val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems, sentencesBySpineIndex, prefs.fontSize)
         val restorePage  = book.readerSpineIndex
         _currentPageIndex.value = restorePage
         _state.value = ReaderState.Ready(
@@ -139,9 +139,23 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             .groupBy { it.blockIndex }
             .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
 
+        val fontSize = prefs.fontSize
+        val initialCss = """
+            html, body { background: #1A1A1A !important; color: #E0E0E0 !important;
+                         margin: 0; padding: 0; overflow: hidden; height: 100%; }
+            #__content  { height: 100vh; padding: 56px 16px 16px 16px;
+                          box-sizing: border-box; column-width: 100vw;
+                          column-gap: 0; column-fill: auto; font-size: ${fontSize}px;
+                          font-family: serif; line-height: 1.6; }
+            * { max-width: 100%; box-sizing: border-box; }
+            a { color: #7CB9E8; }
+        """.trimIndent().replace("\n", " ")
+
         val paragraphs = content.split(Regex("\n{2,}")).filter { it.isNotBlank() }
         return buildString {
-            append("<html><head><meta charset='UTF-8'></head><body>")
+            append("<html><head><meta charset='UTF-8'>")
+            append("<style id='__nb_css'>$initialCss</style>")
+            append("</head><body><div id='__content'>")
             paragraphs.forEachIndexed { idx, para ->
                 val si = blockToFirstSi[idx]
                 val siAttr = if (si != null) " data-si=\"$si\"" else ""
@@ -155,7 +169,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 append("</p>")
             }
-            append("</body></html>")
+            append("</div></body></html>")
         }
     }
 
