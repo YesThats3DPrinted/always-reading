@@ -418,30 +418,28 @@ private fun ReaderContent(
             function fixImages() {
                 var cw = window.__colW || window.innerWidth || $w;
                 var imgs = document.querySelectorAll('img');
+                console.log('fixImages: found ' + imgs.length + ' imgs, colW=' + cw);
                 for (var i = 0; i < imgs.length; i++) {
                     var img = imgs[i];
+                    console.log('img[' + i + '] src=' + img.src.substring(img.src.lastIndexOf('/')+1)
+                        + ' natural=' + img.naturalWidth + 'x' + img.naturalHeight
+                        + ' complete=' + img.complete);
                     if (img.naturalWidth <= 0) continue;
-                    if (img.naturalWidth >= cw) {
-                        // Large image: scale down to fit column, make block-level
-                        var scale = cw / img.naturalWidth;
-                        var pw = Math.round(img.naturalWidth  * scale);
-                        var ph = Math.round(img.naturalHeight * scale);
-                        img.style.setProperty('display', 'block',       'important');
-                        img.style.setProperty('width',   pw + 'px',     'important');
-                        img.style.setProperty('height',  ph + 'px',     'important');
-                        img.style.setProperty('max-width',  pw + 'px',  'important');
-                        img.style.setProperty('max-height', ph + 'px',  'important');
-                    } else {
-                        // Small / inline image: keep natural size but ensure visibility.
-                        // Don't force display:block — it may be an inline decorator in a <span>.
-                        img.style.setProperty('width',  img.naturalWidth  + 'px', 'important');
-                        img.style.setProperty('height', img.naturalHeight + 'px', 'important');
-                    }
+                    // Always block-level: inline images in CSS columns don't create
+                    // a proper layout box and get skipped by the column algorithm.
+                    img.style.setProperty('display', 'block', 'important');
+                    var scale = Math.min(1, cw / img.naturalWidth);
+                    var pw = Math.round(img.naturalWidth  * scale);
+                    var ph = Math.round(img.naturalHeight * scale);
+                    img.style.setProperty('width',      pw + 'px', 'important');
+                    img.style.setProperty('height',     ph + 'px', 'important');
+                    img.style.setProperty('max-width',  pw + 'px', 'important');
+                    img.style.setProperty('max-height', ph + 'px', 'important');
                 }
             }
-            // Run once after layout, then again after images fully load
-            setTimeout(fixImages, 800);
-            window.addEventListener('load', fixImages);
+            // Run after layout; re-report total pages because images add height/columns
+            setTimeout(function() { fixImages(); reportTotalPages(); }, 800);
+            window.addEventListener('load', function() { fixImages(); reportTotalPages(); });
         })();
     """.trimIndent()
 
