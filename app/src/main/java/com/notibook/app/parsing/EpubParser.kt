@@ -14,22 +14,45 @@ data class EpubMetadata(
     val coverPath: String?
 )
 
+/**
+ * A single parsed unit — one sentence, or a placeholder for an image, table, or divider.
+ *
+ * [type] is one of: SENTENCE, IMAGE, TABLE, DIVIDER.
+ * [blockIndex] is the 0-based index of the source block element within this spine item.
+ *   Both EpubParser and EpubCombiner use the same element selector, so the same blockIndex
+ *   value refers to the same DOM element in both contexts. This allows EpubCombiner to add
+ *   data-si="sentenceIndex" to the correct element without any text matching.
+ */
+data class ParsedSentence(
+    val text: String,
+    val chapter: String,
+    val spineItemIndex: Int,
+    val blockIndex: Int,
+    val type: String = TYPE_SENTENCE
+) {
+    companion object {
+        const val TYPE_SENTENCE = "SENTENCE"
+        const val TYPE_IMAGE    = "IMAGE"
+        const val TYPE_TABLE    = "TABLE"
+        const val TYPE_DIVIDER  = "DIVIDER"
+    }
+}
+
 data class EpubParseResult(
     val metadata: EpubMetadata,
-    /** Each triple is (sentenceText, chapterTitle, spineItemIndex). */
-    val sentences: List<Triple<String, String, Int>>
+    val sentences: List<ParsedSentence>
 )
+
+/**
+ * Selector used by BOTH EpubParser and EpubCombiner to enumerate block elements
+ * in document order. Keeping this identical in both places ensures blockIndex values
+ * are consistent for data-si annotation.
+ */
+const val BLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6, table, hr, figure"
 
 /**
  * Custom EPUB parser that treats the .epub as a ZIP archive and extracts text
  * without any third-party EPUB library dependency.
- *
- * Steps:
- *  1. Load all zip entries into memory.
- *  2. Parse META-INF/container.xml → find the OPF (package document) path.
- *  3. Parse the OPF → title, author, cover item id, and ordered spine hrefs.
- *  4. Extract and save the cover image to internal storage.
- *  5. For each spine HTML document: strip tags with Jsoup, split into sentences.
  */
 object EpubParser {
 
@@ -62,13 +85,13 @@ object EpubParser {
         val coverPath = extractCover(context, zip, opfDir, coverItemId, bookId)
 
         // ── 5. Parse spine items → sentences ────────────────────────────────
-        val allSentences = mutableListOf<Triple<String, String, Int>>()
+        val allSentences = mutableListOf<ParsedSentence>()
         for ((spineIndex, href) in spineHrefs.withIndex()) {
             val key = if (opfDir.isEmpty()) href else "$opfDir/$href"
             val htmlBytes = zip[key] ?: zip[href] ?: continue
             val html = htmlBytes.toString(Charsets.UTF_8)
-            val (chapterTitle, sentences) = parseHtmlChapter(html)
-            sentences.forEach { allSentences.add(Triple(it, chapterTitle, spineIndex)) }
+            val (chapterTitle, sentences) = parseHtmlChapter(html, spineIndex, chapterTitle = null)
+            allSentences.addAll(sentences.map { it.copy(chapter = chapterTitle) })
         }
 
         return EpubParseResult(
@@ -105,10 +128,8 @@ object EpubParser {
             ?: doc.selectFirst("creator")?.text()
             ?: ""
 
-        // Cover item id from <meta name="cover" content="...">
         val coverItemId = doc.selectFirst("meta[name=cover]")?.attr("content")
 
-        // Build manifest map: id → href
         val manifest = mutableMapOf<String, String>()
         doc.select("item").forEach { item ->
             val id = item.attr("id")
@@ -116,7 +137,6 @@ object EpubParser {
             if (id.isNotEmpty() && href.isNotEmpty()) manifest[id] = href
         }
 
-        // Spine: ordered hrefs from idref attributes
         val spineHrefs = doc.select("itemref[idref]").mapNotNull { manifest[it.attr("idref")] }
 
         return OpfResult(
@@ -133,9 +153,6 @@ object EpubParser {
         @Suppress("UNUSED_PARAMETER") coverItemId: String?,
         bookId: Long
     ): String? {
-        // Try to find the cover by:
-        //  a) Path containing "cover" with image extension
-        //  b) Fall back to the very first image in the zip
         val imageExtensions = setOf("jpg", "jpeg", "png", "webp")
         val coverEntry = zip.entries.firstOrNull { (path, _) ->
             val ext = path.substringAfterLast(".").lowercase()
@@ -159,29 +176,84 @@ object EpubParser {
         }
     }
 
-    private fun parseHtmlChapter(html: String): Pair<String, List<String>> {
+    /**
+     * Parses one spine item's HTML into a list of [ParsedSentence]s.
+     *
+     * Block elements are enumerated in document order using [BLOCK_SELECTOR].
+     * Each block gets a [ParsedSentence.blockIndex] so that EpubCombiner can
+     * find the matching DOM element and add the correct data-si attribute.
+     *
+     * Rules:
+     * - <hr>: DIVIDER, one entry, no text
+     * - <table>: TABLE, one entry, placeholder text
+     * - <figure> or <p> with image and no text: IMAGE, one entry, placeholder text
+     * - Decorative <p> (only *, —, •, etc.): DIVIDER, one entry
+     * - Everything else with text: split into SENTENCE entries, all sharing the same blockIndex
+     */
+    fun parseHtmlChapter(
+        html: String,
+        spineItemIndex: Int,
+        chapterTitle: String?
+    ): Pair<String, List<ParsedSentence>> {
         val doc = Jsoup.parse(html)
 
-        // Chapter title: prefer headings, fall back to <title>
-        val chapterTitle = doc.selectFirst("h1, h2, h3")?.text()
+        val title = chapterTitle
+            ?: doc.selectFirst("h1, h2, h3")?.text()
             ?: doc.selectFirst("title")?.text()
             ?: ""
 
-        // Process each <p> element as a separate paragraph so that sentences from
-        // different paragraphs are never merged into one segment.
         val body = doc.body() ?: doc
-        val paragraphs = body.select("p")
+        val results = mutableListOf<ParsedSentence>()
+        var blockIdx = 0
 
-        val sentences: List<String> = if (paragraphs.isEmpty()) {
-            // No <p> tags — fall back to full body text (e.g. plain-text spine items)
-            SentenceSplitter.split(body.text())
-        } else {
-            paragraphs.flatMap { p ->
-                val text = p.text().trim()
-                if (text.isBlank()) emptyList() else SentenceSplitter.split(text)
+        val elements = body.select(BLOCK_SELECTOR)
+
+        for (el in elements) {
+            val tag = el.tagName()
+            val text = el.text().trim()
+
+            when {
+                tag == "hr" -> {
+                    // Horizontal rule: scene break / divider
+                    results.add(ParsedSentence("", title, spineItemIndex, blockIdx, ParsedSentence.TYPE_DIVIDER))
+                }
+                tag == "table" -> {
+                    results.add(ParsedSentence("Table — open book to see", title, spineItemIndex, blockIdx, ParsedSentence.TYPE_TABLE))
+                }
+                (tag == "figure" || el.select("img").isNotEmpty()) && text.isBlank() -> {
+                    // Image block (figure, or p/div containing only an img)
+                    results.add(ParsedSentence("Image — open book to see", title, spineItemIndex, blockIdx, ParsedSentence.TYPE_IMAGE))
+                }
+                text.isBlank() || isDecorativeDivider(text) -> {
+                    // Empty or decorative paragraph (*** or — — —)
+                    results.add(ParsedSentence("", title, spineItemIndex, blockIdx, ParsedSentence.TYPE_DIVIDER))
+                }
+                else -> {
+                    // Regular text block — split into sentences, all sharing this blockIndex
+                    SentenceSplitter.split(text).forEach { sentence ->
+                        results.add(ParsedSentence(sentence, title, spineItemIndex, blockIdx, ParsedSentence.TYPE_SENTENCE))
+                    }
+                }
+            }
+            blockIdx++
+        }
+
+        // Fallback: if no block elements found (plain-text spine items), treat entire body as one block
+        if (results.isEmpty()) {
+            val bodyText = body.text().trim()
+            if (bodyText.isNotBlank()) {
+                SentenceSplitter.split(bodyText).forEach { sentence ->
+                    results.add(ParsedSentence(sentence, title, spineItemIndex, 0, ParsedSentence.TYPE_SENTENCE))
+                }
             }
         }
 
-        return chapterTitle to sentences
+        return title to results
+    }
+
+    /** Returns true if [text] contains only decorative characters (asterisks, dashes, bullets, etc.). */
+    fun isDecorativeDivider(text: String): Boolean {
+        val stripped = text.replace(Regex("[*•·—–\\-=#~\\s]"), "")
+        return stripped.isEmpty() && text.isNotEmpty()
     }
 }

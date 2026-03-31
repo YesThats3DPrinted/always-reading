@@ -5,11 +5,13 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.notibook.app.NotiBookApp
+import com.notibook.app.data.db.SentenceEntity
 import com.notibook.app.epub.EpubCombiner
 import com.notibook.app.epub.EpubExtractor
 import com.notibook.app.epub.EpubSpineReader
 import com.notibook.app.epub.SpineItem
 import com.notibook.app.notification.NotificationHelper
+import com.notibook.app.parsing.ParsedSentence
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +28,7 @@ sealed interface ReaderState {
         val spineItems: List<SpineItem>,
         val combinedHtml: String,
         val baseUrl: String,
-        val restorePageIndex: Int   // which page to open to
+        val restorePageIndex: Int
     ) : ReaderState
 }
 
@@ -39,11 +41,10 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _state = MutableStateFlow<ReaderState>(ReaderState.Loading)
     val state: StateFlow<ReaderState> = _state.asStateFlow()
 
-    // Drives LaunchedEffect in Screen → calls window.scrollTo(0, page * innerHeight)
+    // Current page index — drives LaunchedEffect in Screen → window.scrollTo / translateX
     private val _currentPageIndex = MutableStateFlow(0)
     val currentPageIndex: StateFlow<Int> = _currentPageIndex.asStateFlow()
 
-    // Reported by JS after document loads; used for sentence approximation at close
     private val _totalPages = MutableStateFlow(1)
 
     private val _currentChapterTitle = MutableStateFlow("")
@@ -86,9 +87,19 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         EpubExtractor.ensureExtracted(getApplication(), bookId, book.filePath)
         val cacheDir   = EpubExtractor.getCacheDir(getApplication(), bookId)
         val spineItems = EpubSpineReader.readSpine(cacheDir)
-        if (spineItems.isEmpty()) { _state.value = ReaderState.Error("Could not read book chapters."); return }
-        val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems)
-        val restorePage  = restorePage(book)
+        if (spineItems.isEmpty()) {
+            _state.value = ReaderState.Error("Could not read book chapters."); return
+        }
+
+        // Fetch sentences per spine item so EpubCombiner can annotate data-si attributes
+        val sentencesBySpineIndex: Map<Int, List<SentenceEntity>> = withContext(Dispatchers.IO) {
+            spineItems.indices.associate { idx ->
+                idx to repo.getSentencesForSpineItem(bookId, idx)
+            }
+        }
+
+        val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems, sentencesBySpineIndex)
+        val restorePage  = book.readerSpineIndex
         _currentPageIndex.value = restorePage
         _state.value = ReaderState.Ready(
             bookTitle        = book.title,
@@ -104,38 +115,48 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         val file = File(book.filePath)
         if (!file.exists()) { _state.value = ReaderState.Error("File not found."); return }
         val content = withContext(Dispatchers.IO) { file.readText() }
-        val restorePage = restorePage(book)
+
+        // Fetch sentences to annotate paragraphs with data-si
+        val sentences = withContext(Dispatchers.IO) {
+            repo.getSentencesForSpineItem(book.id, 0)  // all TXT sentences have spineItemIndex=0
+        }
+
+        val restorePage = book.readerSpineIndex
         _currentPageIndex.value = restorePage
         _state.value = ReaderState.Ready(
             bookTitle        = book.title,
             spineItems       = emptyList(),
-            combinedHtml     = buildTxtHtml(content),
+            combinedHtml     = buildTxtHtml(content, sentences),
             baseUrl          = "about:blank",
             restorePageIndex = restorePage
         )
         onReaderOpened(book.notificationActive)
     }
 
-    private fun buildTxtHtml(content: String): String {
+    private fun buildTxtHtml(content: String, sentences: List<SentenceEntity>): String {
+        // Build blockIndex → first sentenceIndex mapping (same logic as EpubCombiner)
+        val blockToFirstSi: Map<Int, Int> = sentences
+            .groupBy { it.blockIndex }
+            .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
+
         val paragraphs = content.split(Regex("\n{2,}")).filter { it.isNotBlank() }
         return buildString {
             append("<html><head><meta charset='UTF-8'></head><body>")
-            paragraphs.forEach { para ->
-                append("<p>")
-                append(para.trim().replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\n","<br>"))
+            paragraphs.forEachIndexed { idx, para ->
+                val si = blockToFirstSi[idx]
+                val siAttr = if (si != null) " data-si=\"$si\"" else ""
+                append("<p$siAttr>")
+                append(
+                    para.trim()
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                        .replace("\n", "<br>")
+                )
                 append("</p>")
             }
             append("</body></html>")
         }
-    }
-
-    /**
-     * Page index to restore. Uses readerSpineIndex field (repurposed from chapter index
-     * to page index now that the whole book is one combined document).
-     * Falls back to deriving from currentIndex/totalSentences if page index not yet saved.
-     */
-    private fun restorePage(book: com.notibook.app.data.db.BookEntity): Int {
-        return book.readerSpineIndex  // 0 for new books, saved page index for returning users
     }
 
     // ── Notification lifecycle ────────────────────────────────────────────────
@@ -147,54 +168,47 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     /**
      * Called from the Screen on any close path.
-     * [pageIndex] and [totalPages] are read from webView directly in Kotlin — exact integers.
-     * [visibleText] is the text of the first paragraph visible at the top of the page,
-     * used to find the exact sentence in DB rather than a linear approximation.
-     * [startNotification] = true for "Close & start notification".
+     *
+     * [sentenceIndex] comes from JS via data-si attribute on the element at the
+     * top of the current page — exact, no approximation, no text matching.
+     * The current page index is read from [_currentPageIndex] which the ViewModel
+     * always tracks precisely.
      */
-    fun closeWithPosition(
-        pageIndex: Int,
-        totalPages: Int,
-        visibleText: String,
-        startNotification: Boolean
-    ) {
+    fun closeWithPosition(sentenceIndex: Int, startNotification: Boolean) {
         val capturedBookId       = bookId
         val capturedChapterTitle = _currentChapterTitle.value
+        val capturedPageIndex    = _currentPageIndex.value
         val ctx = getApplication<Application>()
 
-        Log.d("NotiBook", "close: page=$pageIndex/$totalPages visibleText='${visibleText.take(50)}'")
+        Log.d("NotiBook", "close: page=$capturedPageIndex sentenceIndex=$sentenceIndex")
 
         app.appScope.launch {
             val book = repo.getBook(capturedBookId) ?: return@launch
 
-            // Save page index for next open
-            repo.updateReaderPosition(capturedBookId, pageIndex, 0f)
+            // Save page index so reader can restore next time it opens
+            repo.updateReaderPosition(capturedBookId, capturedPageIndex)
 
-            // Compute approximate sentence index from page position
-            val approxIndex = if (book.totalSentences > 0 && totalPages > 0)
-                ((pageIndex.toFloat() / totalPages) * book.totalSentences)
-                    .toInt().coerceIn(0, book.totalSentences - 1)
-            else 0
-
-            // Try to find exact sentence by text match near the approximate index
-            val sentenceIndex = if (visibleText.length >= 15) {
-                val prefix = visibleText.take(40)
-                val found  = repo.findSentenceByTextPrefix(capturedBookId, prefix)
-                if (found != null && kotlin.math.abs(found.sentenceIndex - approxIndex) < 500) {
-                    found.sentenceIndex
-                } else {
-                    approxIndex
+            // Find the first non-DIVIDER sentence at or after sentenceIndex
+            var actualSentenceIdx = sentenceIndex.coerceIn(0, (book.totalSentences - 1).coerceAtLeast(0))
+            val targetSentence = repo.getSentence(capturedBookId, actualSentenceIdx)
+            if (targetSentence?.type == ParsedSentence.TYPE_DIVIDER) {
+                // Advance to next non-DIVIDER
+                var next = actualSentenceIdx + 1
+                while (next < book.totalSentences) {
+                    val s = repo.getSentence(capturedBookId, next)
+                    if (s != null && s.type != ParsedSentence.TYPE_DIVIDER) {
+                        actualSentenceIdx = next; break
+                    }
+                    next++
                 }
-            } else approxIndex
+            }
 
-            Log.d("NotiBook", "close: approx=$approxIndex exact=$sentenceIndex total=${book.totalSentences}")
-
-            repo.updatePosition(capturedBookId, sentenceIndex, capturedChapterTitle)
+            repo.updatePosition(capturedBookId, actualSentenceIdx, capturedChapterTitle)
 
             val shouldShow = startNotification || book.notifWasActiveBeforeReader
             if (shouldShow) {
                 val updatedBook = repo.getBook(capturedBookId) ?: return@launch
-                val sentence    = repo.getSentence(capturedBookId, sentenceIndex)
+                val sentence    = repo.getSentence(capturedBookId, actualSentenceIdx)
                 if (sentence != null) {
                     repo.updateNotificationActive(capturedBookId, true)
                     NotificationHelper.show(ctx, updatedBook, sentence)
@@ -206,24 +220,18 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── JS bridge callbacks ───────────────────────────────────────────────────
 
-    /** JS reports total pages after document finishes rendering. */
     fun onTotalPages(total: Int) {
         _totalPages.value = total.coerceAtLeast(1)
     }
 
-    /** JS tap on left zone or swipe right. */
     fun onPrevPage() {
-        val prev = (_currentPageIndex.value - 1).coerceAtLeast(0)
-        _currentPageIndex.value = prev
+        _currentPageIndex.value = (_currentPageIndex.value - 1).coerceAtLeast(0)
     }
 
-    /** JS tap on right zone or swipe left. */
     fun onNextPage() {
-        val next = (_currentPageIndex.value + 1).coerceAtMost(_totalPages.value - 1)
-        _currentPageIndex.value = next
+        _currentPageIndex.value = (_currentPageIndex.value + 1).coerceAtMost(_totalPages.value - 1)
     }
 
-    /** JS tap on center zone — toggle top bar. */
     fun onCenterTap() {
         _topBarVisible.value = !_topBarVisible.value
     }
@@ -231,6 +239,11 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     fun onChapterVisible(chapterIndex: Int) {
         val items = (state.value as? ReaderState.Ready)?.spineItems ?: return
         _currentChapterTitle.value = items.getOrNull(chapterIndex)?.chapterTitle ?: ""
+    }
+
+    /** Called from JS when navigating to a specific page (chapter jump or internal link). */
+    fun onScrollToPage(page: Int) {
+        _currentPageIndex.value = page.coerceIn(0, _totalPages.value - 1)
     }
 
     // ── Chapter jump ──────────────────────────────────────────────────────────
@@ -245,6 +258,11 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── Internal link handler ─────────────────────────────────────────────────
 
+    /**
+     * Navigates to an internal EPUB link (file:// URL with optional #fragment).
+     * With CSS columns, navigation is by page (column) index via onScrollToPage().
+     * JS finds the target element's column index using offsetLeft / innerWidth.
+     */
     fun handleInternalLink(resolvedHref: String, webView: android.webkit.WebView?) {
         webView ?: return
         val uri      = android.net.Uri.parse(resolvedHref)
@@ -252,27 +270,34 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         val fragment = uri.fragment
         val spineItems = (state.value as? ReaderState.Ready)?.spineItems ?: return
         val spineIdx   = spineItems.indexOfFirst { it.absolutePath == path }
+
         val js = buildString {
+            append("(function(){")
             if (spineIdx >= 0) {
-                append("(function(){")
+                // Jump to the chapter div, then optionally to the fragment
                 append("var ch=document.getElementById('chapter-$spineIdx');")
-                append("if(ch)window.scrollTo(0,ch.offsetTop);")
+                append("var target=ch;")
                 if (fragment != null) {
                     val safe = fragment.replace("'", "\\'")
-                    append("setTimeout(function(){")
                     append("var fr=document.getElementById('$safe')||document.querySelector('[name=\"$safe\"]');")
-                    append("if(fr)window.scrollTo(0,fr.getBoundingClientRect().top+window.pageYOffset);")
-                    append("},80);")
+                    append("if(fr)target=fr;")
                 }
-                append("})()")
+                append("if(target){")
+                append("var first=target.querySelector('p,h1,h2,h3')||target;")
+                append("var page=Math.floor(first.offsetLeft/window.innerWidth);")
+                append("NotiBook.onScrollToPage(page);")
+                append("}")
             } else if (fragment != null) {
                 val safe = fragment.replace("'", "\\'")
-                append("(function(){")
                 append("var fr=document.getElementById('$safe')||document.querySelector('[name=\"$safe\"]');")
-                append("if(fr)window.scrollTo(0,fr.getBoundingClientRect().top+window.pageYOffset);")
-                append("})()")
+                append("if(fr){")
+                append("var page=Math.floor(fr.offsetLeft/window.innerWidth);")
+                append("NotiBook.onScrollToPage(page);")
+                append("}")
             }
+            append("})()")
         }
+
         if (js.isNotEmpty()) webView.post { webView.evaluateJavascript(js, null) }
     }
 

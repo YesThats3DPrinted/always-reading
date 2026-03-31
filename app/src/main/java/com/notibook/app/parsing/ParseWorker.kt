@@ -31,9 +31,7 @@ class ParseWorker(
                 return Result.failure()
             }
 
-            // Parse into (sentenceText, chapterTitle, spineItemIndex) triples.
-            // TXT files use Pair<String,String> — we lift them to triples with spineItemIndex=0.
-            val rawSentences: List<Triple<String, String, Int>> = when {
+            val rawSentences: List<ParsedSentence> = when {
                 book.filePath.endsWith(".epub", ignoreCase = true) -> {
                     val result = EpubParser.parse(context, file, bookId)
                     // Update title/author/cover from EPUB metadata if they were guessed
@@ -48,7 +46,15 @@ class ParseWorker(
                     result.sentences
                 }
                 book.filePath.endsWith(".txt", ignoreCase = true) -> {
-                    TxtParser.parse(file).map { (text, chapter) -> Triple(text, chapter, 0) }
+                    TxtParser.parse(file).map { (text, chapter, blockIndex) ->
+                        ParsedSentence(
+                            text = text,
+                            chapter = chapter,
+                            spineItemIndex = 0,
+                            blockIndex = blockIndex,
+                            type = ParsedSentence.TYPE_SENTENCE
+                        )
+                    }
                 }
                 else -> {
                     repo.markParsingComplete(bookId, 0)
@@ -58,14 +64,16 @@ class ParseWorker(
 
             // Insert sentences in batches, updating progress count after each batch
             val buffer = mutableListOf<SentenceEntity>()
-            rawSentences.forEachIndexed { index, (text, chapter, spineItemIndex) ->
+            rawSentences.forEachIndexed { index, ps ->
                 buffer.add(
                     SentenceEntity(
-                        bookId = bookId,
+                        bookId        = bookId,
                         sentenceIndex = index,
-                        text = text,
-                        chapter = chapter,
-                        spineItemIndex = spineItemIndex
+                        text          = ps.text,
+                        chapter       = ps.chapter,
+                        spineItemIndex = ps.spineItemIndex,
+                        blockIndex    = ps.blockIndex,
+                        type          = ps.type
                     )
                 )
                 if (buffer.size >= BATCH_SIZE) {
@@ -81,7 +89,6 @@ class ParseWorker(
             repo.markParsingComplete(bookId, rawSentences.size)
             Result.success()
         } catch (e: Exception) {
-            // Leave isParsing = false with 0 sentences so the UI shows an error state
             repo.markParsingComplete(bookId, 0)
             Result.failure()
         }

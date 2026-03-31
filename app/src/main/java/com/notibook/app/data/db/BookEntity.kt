@@ -23,10 +23,8 @@ data class BookEntity(
     val notificationActive: Boolean = false,
 
     // ── In-app reader position ───────────────────────────────────────────────
-    /** 0-based index of the spine item currently open in the EPUB reader. */
+    /** Saved page index in the CSS-columns reader (repurposed from spine index). */
     val readerSpineIndex: Int = 0,
-    /** Scroll position within the current spine item (0.0 = top, 1.0 = bottom). */
-    val readerScrollPercent: Float = 0f,
     /** True if the notification was active when the reader was opened (so we can restore it on close). */
     val notifWasActiveBeforeReader: Boolean = false
 )

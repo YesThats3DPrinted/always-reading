@@ -42,8 +42,8 @@ interface BookDao {
     @Query("DELETE FROM books WHERE id = :bookId")
     suspend fun deleteById(bookId: Long)
 
-    @Query("UPDATE books SET readerSpineIndex = :spineIndex, readerScrollPercent = :scrollPct WHERE id = :bookId")
-    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int, scrollPct: Float)
+    @Query("UPDATE books SET readerSpineIndex = :spineIndex WHERE id = :bookId")
+    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int)
 
     @Query("UPDATE books SET notifWasActiveBeforeReader = :was WHERE id = :bookId")
     suspend fun updateNotifWasActive(bookId: Long, was: Boolean)

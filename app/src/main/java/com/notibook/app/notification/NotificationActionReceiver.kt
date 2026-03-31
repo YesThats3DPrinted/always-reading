@@ -44,19 +44,27 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
         when (action) {
             ACTION_PREV -> {
-                if (book.currentIndex > 0) {
-                    val newIndex = book.currentIndex - 1
-                    val sentence = repo.getSentence(bookId, newIndex) ?: return
-                    repo.updatePosition(bookId, newIndex, sentence.chapter)
-                    NotificationHelper.show(context, book, sentence)
+                var newIndex = book.currentIndex - 1
+                while (newIndex >= 0) {
+                    val s = repo.getSentence(bookId, newIndex) ?: break
+                    if (s.type != "DIVIDER") {
+                        repo.updatePosition(bookId, newIndex, s.chapter)
+                        NotificationHelper.show(context, book, s)
+                        break
+                    }
+                    newIndex--
                 }
             }
             ACTION_NEXT -> {
-                if (book.currentIndex < book.totalSentences - 1) {
-                    val newIndex = book.currentIndex + 1
-                    val sentence = repo.getSentence(bookId, newIndex) ?: return
-                    repo.updatePosition(bookId, newIndex, sentence.chapter)
-                    NotificationHelper.show(context, book, sentence)
+                var newIndex = book.currentIndex + 1
+                while (newIndex < book.totalSentences) {
+                    val s = repo.getSentence(bookId, newIndex) ?: break
+                    if (s.type != "DIVIDER") {
+                        repo.updatePosition(bookId, newIndex, s.chapter)
+                        NotificationHelper.show(context, book, s)
+                        break
+                    }
+                    newIndex++
                 }
             }
             ACTION_SNOOZE -> {

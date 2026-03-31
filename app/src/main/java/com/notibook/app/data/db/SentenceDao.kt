@@ -20,7 +20,6 @@ interface SentenceDao {
     @Query("SELECT * FROM sentences WHERE bookId = :bookId AND spineItemIndex = :spineItemIndex ORDER BY sentenceIndex")
     suspend fun getSentencesForSpineItem(bookId: Long, spineItemIndex: Int): List<SentenceEntity>
 
-    /** Find the first sentence whose text begins with [prefix]. Used for exact position matching. */
-    @Query("SELECT * FROM sentences WHERE bookId = :bookId AND text LIKE :prefix || '%' ORDER BY sentenceIndex LIMIT 1")
-    suspend fun findByTextPrefix(bookId: Long, prefix: String): SentenceEntity?
+    @Query("SELECT * FROM sentences WHERE bookId = :bookId ORDER BY sentenceIndex")
+    suspend fun getAllForBook(bookId: Long): List<SentenceEntity>
 }

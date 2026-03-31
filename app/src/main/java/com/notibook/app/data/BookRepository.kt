@@ -55,11 +55,11 @@ class BookRepository(
     suspend fun getSentencesForSpineItem(bookId: Long, spineItemIndex: Int): List<SentenceEntity> =
         sentenceDao.getSentencesForSpineItem(bookId, spineItemIndex)
 
-    suspend fun findSentenceByTextPrefix(bookId: Long, prefix: String): SentenceEntity? =
-        sentenceDao.findByTextPrefix(bookId, prefix)
+    suspend fun getAllSentencesForBook(bookId: Long): List<SentenceEntity> =
+        sentenceDao.getAllForBook(bookId)
 
-    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int, scrollPct: Float) =
-        bookDao.updateReaderPosition(bookId, spineIndex, scrollPct)
+    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int) =
+        bookDao.updateReaderPosition(bookId, spineIndex)
 
     suspend fun updateNotifWasActive(bookId: Long, was: Boolean) =
         bookDao.updateNotifWasActive(bookId, was)
