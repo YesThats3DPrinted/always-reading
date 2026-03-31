@@ -351,14 +351,27 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── Orientation re-init ───────────────────────────────────────────────────
 
-    /** Called from JS bridge: records the data-si at the top of the current page. */
-    fun onDataSi(si: Int) { if (si >= 0) _restoreSentenceIndex.value = si }
+    // Set to true by startReinit() so the first onDataSi() call after a re-init
+    // (which comes from the LaunchedEffect page animation, not from user navigation)
+    // is ignored. This keeps the anchor stable across orientation changes — the
+    // canonical position only moves when the user actively navigates.
+    private val skipNextDataSiUpdate = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Called from JS bridge: records the data-si at the top of the current page.
+     *  Skipped once after a re-init so orientation change never drifts the anchor. */
+    fun onDataSi(si: Int) {
+        if (skipNextDataSiUpdate.getAndSet(false)) return
+        if (si >= 0) _restoreSentenceIndex.value = si
+    }
 
     /** Called from JS bridge: columns fully re-laid-out after resize, hide overlay. */
     fun onReady() { _isReiniting.value = false }
 
     /** Called from Kotlin when screen width changes: show overlay before re-init JS fires. */
-    fun startReinit() { _isReiniting.value = true }
+    fun startReinit() {
+        _isReiniting.value = true
+        skipNextDataSiUpdate.set(true)  // freeze anchor for this re-init cycle
+    }
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
