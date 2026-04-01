@@ -45,8 +45,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _currentPageIndex = MutableStateFlow(0)
     val currentPageIndex: StateFlow<Int> = _currentPageIndex.asStateFlow()
 
-    private val _totalPages = MutableStateFlow(1)
-
     private val _currentChapterTitle = MutableStateFlow("")
 
     private val _scrollToChapterCommand = MutableStateFlow<Int?>(null)
@@ -199,6 +197,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 append("</p>")
             }
+            append("<span id=\"__nb_end\"></span>")
             append("</body></html>")
         }
     }
@@ -264,17 +263,16 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── JS bridge callbacks ───────────────────────────────────────────────────
 
-    fun onTotalPages(total: Int) {
-        _totalPages.value = total.coerceAtLeast(1)
-    }
-
     fun onPrevPage() {
         _currentPageIndex.value = (_currentPageIndex.value - 1).coerceAtLeast(0)
         _topBarVisible.value = false
     }
 
     fun onNextPage() {
-        _currentPageIndex.value = (_currentPageIndex.value + 1).coerceAtMost(_totalPages.value - 1)
+        // No clamping here — JS guards against going past the last page via hasNextPage()
+        // which reads scrollWidth fresh every time, so it's always accurate even for
+        // large books where the browser computes columns lazily.
+        _currentPageIndex.value = _currentPageIndex.value + 1
         _topBarVisible.value = false
     }
 
@@ -289,7 +287,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     /** Called from JS when navigating to a specific page (chapter jump or internal link). */
     fun onScrollToPage(page: Int) {
-        _currentPageIndex.value = page.coerceIn(0, _totalPages.value - 1)
+        _currentPageIndex.value = page.coerceAtLeast(0)
     }
 
     // ── Chapter jump ──────────────────────────────────────────────────────────

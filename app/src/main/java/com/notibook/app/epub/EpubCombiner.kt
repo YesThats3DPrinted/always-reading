@@ -127,6 +127,7 @@ object EpubCombiner {
                 }
                 append("\n</div>")
             }
+            append("\n<span id=\"__nb_end\"></span>")
             append("\n</body></html>")
         }
     }

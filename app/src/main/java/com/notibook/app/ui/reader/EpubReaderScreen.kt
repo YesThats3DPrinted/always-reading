@@ -153,7 +153,6 @@ fun EpubReaderScreen(
                 onPrevPage            = { vm.onPrevPage() },
                 onNextPage            = { vm.onNextPage() },
                 onCenterTap           = { vm.onCenterTap() },
-                onTotalPages          = { total -> vm.onTotalPages(total) },
                 onChapterVisible      = { idx -> vm.onChapterVisible(idx) },
                 onScrollToPage        = { page -> vm.onScrollToPage(page) },
                 onInternalLink        = { href -> vm.handleInternalLink(href, webViewRef.value) },
@@ -293,7 +292,6 @@ private fun ReaderContent(
     onPrevPage: () -> Unit,
     onNextPage: () -> Unit,
     onCenterTap: () -> Unit,
-    onTotalPages: (Int) -> Unit,
     onChapterVisible: (Int) -> Unit,
     onScrollToPage: (Int) -> Unit,
     onInternalLink: (String) -> Unit,
@@ -344,8 +342,9 @@ private fun ReaderContent(
 
             // ── Dimensions from Kotlin layout (always correct) ────────────────
             var w = $w; var h = $h;
-            // Store column width globally so all navigation uses the same value
+            // Store column width and height globally so fixImages and reinit use them
             window.__colW = w;
+            window.__colH = h;
             // Hard clip at html bounds (overflow:hidden on root propagates to viewport, not a clip)
             document.documentElement.style.setProperty('clip-path', 'inset(0)', 'important');
 
@@ -365,10 +364,16 @@ private fun ReaderContent(
                 return cur;
             }
 
-            // ── Total pages ───────────────────────────────────────────────────
-            function reportTotalPages() {
-                var total = Math.max(1, Math.ceil(document.body.scrollWidth / w));
-                NotiBook.onTotalPages(total);
+            // ── End-of-book guard ─────────────────────────────────────────────
+            // Returns true if there is a next page by checking whether the sentinel
+            // span at the end of the document is currently visible in the viewport.
+            // getBoundingClientRect() accounts for the CSS transform on the body,
+            // so rect.left reflects the element's actual on-screen position.
+            function sentinelVisible() {
+                var end = document.getElementById('__nb_end');
+                if (!end) return false;
+                var rect = end.getBoundingClientRect();
+                return rect.left >= 0 && rect.left < w;
             }
 
             // ── Exact sentence lookup via caretRangeFromPoint + data-sentences ──
@@ -472,12 +477,12 @@ private fun ReaderContent(
                 var absDy = Math.abs(dy);
 
                 if (absDx > SWIPE_THRESHOLD && absDx > absDy) {
-                    if (dx < 0) NotiBook.onNextPage();
+                    if (dx < 0) { if (!sentinelVisible()) NotiBook.onNextPage(); }
                     else        NotiBook.onPrevPage();
                 } else if (absDx < TAP_MAX_MOVE && absDy < TAP_MAX_MOVE && dt < TAP_MAX_MS) {
                     var x = touchStartX;
                     if (x < w * 0.3)      NotiBook.onPrevPage();
-                    else if (x > w * 0.7) NotiBook.onNextPage();
+                    else if (x > w * 0.7) { if (!sentinelVisible()) NotiBook.onNextPage(); }
                     else                   NotiBook.onCenterTap();
                 }
             }, { passive: true });
@@ -503,16 +508,12 @@ private fun ReaderContent(
                     setTimeout(tryRestore, 300); return;
                 }
                 goToPage(targetPage);
-                reportTotalPages();
                 if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
                 // Report data-si after page is set so ViewModel has an anchor for re-init
                 setTimeout(reportDataSi, 100);
             }
             // Small delay lets the browser finish column layout before we read scrollWidth
-            setTimeout(function() {
-                tryRestore();
-                if (targetPage === 0) reportTotalPages();
-            }, 600);
+            setTimeout(function() { tryRestore(); }, 600);
 
             // ── Chapter page breaks ───────────────────────────────────────────
             // Force each chapter (except the first) to start on a fresh column.
@@ -527,8 +528,9 @@ private fun ReaderContent(
             // Inline styles set via JS have the highest cascade priority.
             function fixImages() {
                 var cw = window.__colW || window.innerWidth || $w;
+                var ch = window.__colH || window.innerHeight || $h;
                 var imgs = document.querySelectorAll('img');
-                console.log('fixImages: found ' + imgs.length + ' imgs, colW=' + cw);
+                console.log('fixImages: found ' + imgs.length + ' imgs, colW=' + cw + ' colH=' + ch);
                 for (var i = 0; i < imgs.length; i++) {
                     var img = imgs[i];
                     console.log('img[' + i + '] src=' + img.src.substring(img.src.lastIndexOf('/')+1)
@@ -538,7 +540,11 @@ private fun ReaderContent(
                     // Always block-level: inline images in CSS columns don't create
                     // a proper layout box and get skipped by the column algorithm.
                     img.style.setProperty('display', 'block', 'important');
-                    var scale = Math.min(1, cw / img.naturalWidth);
+                    // Constrain by both width AND height so portrait images don't
+                    // overflow the viewport vertically in landscape orientation.
+                    var scaleW = Math.min(1, cw / img.naturalWidth);
+                    var scaleH = Math.min(1, ch / img.naturalHeight);
+                    var scale  = Math.min(scaleW, scaleH);
                     var pw = Math.round(img.naturalWidth  * scale);
                     var ph = Math.round(img.naturalHeight * scale);
                     img.style.setProperty('width',      pw + 'px', 'important');
@@ -550,9 +556,10 @@ private fun ReaderContent(
             // Expose globally so buildReinitJs can call it after orientation change
             window.__fixImages = fixImages;
 
-            // Run after layout; re-report total pages because images add height/columns
-            setTimeout(function() { fixImages(); reportTotalPages(); }, 800);
-            window.addEventListener('load', function() { fixImages(); reportTotalPages(); });
+            // Run fixImages after layout. Total pages is no longer pre-reported —
+            // hasNextPage() reads scrollWidth fresh on every navigation attempt.
+            setTimeout(function() { fixImages(); }, 800);
+            window.addEventListener('load', function() { fixImages(); });
         })();
     """.trimIndent()
 
@@ -575,6 +582,7 @@ private fun ReaderContent(
         (function(){
             var w=$w; var h=$h;
             window.__colW = w;
+            window.__colH = h;
             var de = document.documentElement;
             de.style.setProperty('width',     w+'px',    'important');
             de.style.setProperty('height',    h+'px',    'important');
@@ -584,59 +592,77 @@ private fun ReaderContent(
             b.style.setProperty('height',       h+'px', 'important');
             b.style.setProperty('column-width', w+'px', 'important');
             b.style.setProperty('transition',   'none', 'important');
-            // Do NOT reset transform to 0 here — offsetLeft is layout-space (independent of
-            // CSS transform), so we can compute the target page without first jumping to page 0.
-            // Resetting would briefly show page 0 before the correct page is found.
+            // Transform is NOT reset here. We wait for the overlay to be definitely
+            // visible (250ms >> one Compose frame), then reset to 0 inside setTimeout
+            // so that rects[0].left == layout position (no offset math needed).
             setTimeout(function(){
+                // Overlay is covering the screen — safe to reset transform temporarily.
+                b.style.transform = 'translateX(0px)';
+
                 var targetPage = 0;
                 var restoreSi = $si;
 
                 if (restoreSi >= 0) {
                     // Find the block containing restoreSi via data-sentences
                     var allBlocks = document.querySelectorAll('[data-sentences]');
-                    var targetBlock = null, sentenceCharOffset = 0;
+                    var targetBlock = null, normOffset = 0, normTotal = 0;
                     for (var bi = 0; bi < allBlocks.length && !targetBlock; bi++) {
                         var entries = allBlocks[bi].dataset.sentences.split(',');
                         var cumLen = 0;
+                        var blockNormTotal = 0;
                         for (var ei = 0; ei < entries.length; ei++) {
                             var parts = entries[ei].split(':');
+                            var len = parseInt(parts[1]);
+                            blockNormTotal += len + 1;
                             if (parseInt(parts[0]) === restoreSi) {
                                 targetBlock = allBlocks[bi];
-                                sentenceCharOffset = cumLen;
-                                break;
+                                normOffset = cumLen;   // normalized chars before this sentence
+                                normTotal = blockNormTotal; // total normalized chars in block
                             }
-                            cumLen += parseInt(parts[1]) + 1; // +1 for space between sentences
+                            cumLen += len + 1;
                         }
+                        if (targetBlock) normTotal = cumLen;
                     }
 
                     if (targetBlock) {
-                        // Use a Range at the sentence's char offset to get the viewport position,
-                        // then convert to layout position using the current (stale) body transform.
-                        // This gives sub-paragraph precision even for long multi-page paragraphs.
                         try {
+                            // Map normalized char offset → raw char offset proportionally.
+                            // sentenceCharOffset comes from DB (Jsoup-normalized lengths),
+                            // but text nodes have raw lengths. Proportional mapping bridges
+                            // the gap caused by whitespace normalization differences.
+                            var rawLen = targetBlock.textContent.length;
+                            var rawOffset = normTotal > 0
+                                ? Math.round(normOffset * rawLen / normTotal)
+                                : 0;
+                            console.log('reinit: si=' + restoreSi
+                                + ' normOffset=' + normOffset + '/' + normTotal
+                                + ' rawOffset=' + rawOffset + '/' + rawLen
+                                + ' blockStart=' + targetBlock.offsetLeft);
+
+                            // Walk text nodes to find the node containing rawOffset
                             var walker = document.createTreeWalker(
                                 targetBlock, NodeFilter.SHOW_TEXT, null, false);
-                            var cumLen2 = 0, rangeNode = null, rangeOff = 0, tn;
+                            var cumRaw = 0, rangeNode = null, rangeOff = 0, tn;
                             while ((tn = walker.nextNode())) {
                                 var len = tn.textContent.length;
-                                if (cumLen2 + len > sentenceCharOffset) {
+                                if (cumRaw + len > rawOffset) {
                                     rangeNode = tn;
-                                    rangeOff = sentenceCharOffset - cumLen2;
+                                    rangeOff = rawOffset - cumRaw;
                                     break;
                                 }
-                                cumLen2 += len;
+                                cumRaw += len;
                             }
+
                             if (rangeNode) {
                                 var range = document.createRange();
-                                range.setStart(rangeNode, Math.min(rangeOff, rangeNode.textContent.length));
+                                range.setStart(rangeNode,
+                                    Math.min(rangeOff, rangeNode.textContent.length));
                                 var rects = range.getClientRects();
                                 if (rects && rects.length > 0) {
-                                    // rects[0].left is viewport-space; add back current translateX
-                                    // magnitude to convert to layout-space, then divide by new colW.
-                                    var match = b.style.transform.match(/translateX\((-?[\d.]+)px\)/);
-                                    var translateMag = match ? Math.abs(parseFloat(match[1])) : 0;
-                                    var layoutX = rects[0].left + translateMag;
-                                    targetPage = Math.max(0, Math.floor(layoutX / w));
+                                    // Transform is 0, so rects[0].left == layout X directly
+                                    targetPage = Math.max(0, Math.floor(rects[0].left / w));
+                                    console.log('reinit: rectLeft=' + rects[0].left
+                                        + ' targetPage=' + targetPage);
                                 } else {
                                     targetPage = Math.floor(targetBlock.offsetLeft / w);
                                 }
@@ -644,6 +670,7 @@ private fun ReaderContent(
                                 targetPage = Math.floor(targetBlock.offsetLeft / w);
                             }
                         } catch(e) {
+                            console.log('reinit error: ' + e);
                             targetPage = Math.floor(targetBlock.offsetLeft / w);
                         }
                     } else {
@@ -656,8 +683,6 @@ private fun ReaderContent(
                 window.__currentPage = targetPage;
                 b.style.transform = 'translateX(-'+(targetPage*w)+'px)';
                 if (window.__fixImages) window.__fixImages();
-                var total = Math.max(1, Math.ceil(b.scrollWidth / w));
-                NotiBook.onTotalPages(total);
                 NotiBook.onScrollToPage(targetPage);
                 NotiBook.onReady();
             }, 250);
@@ -710,7 +735,6 @@ private fun ReaderContent(
                     @JavascriptInterface fun onPrevPage()                  = onPrevPage()
                     @JavascriptInterface fun onNextPage()                  = onNextPage()
                     @JavascriptInterface fun onCenterTap()                 = onCenterTap()
-                    @JavascriptInterface fun onTotalPages(total: Int)      = onTotalPages(total)
                     @JavascriptInterface fun onChapterVisible(idx: Int)    = onChapterVisible(idx)
                     @JavascriptInterface fun onScrollToPage(page: Int)     = onScrollToPage(page)
                     @JavascriptInterface fun onInternalLink(href: String)  = onInternalLink(href)
