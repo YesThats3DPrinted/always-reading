@@ -31,23 +31,25 @@ object NotificationHelper {
 
     fun show(context: Context, book: BookEntity, sentence: SentenceEntity) {
         if (book.isParsing) return
-        val notifId = notificationId(book.id)
+        val notifId      = notificationId(book.id)
         val notification = buildNotification(context, book, sentence)
         try {
-            // Start the foreground service first, then attach the notification to it.
-            // This makes the notification non-swipeable (ongoing) and keeps it visible
-            // even under memory pressure.
-            val serviceIntent = Intent(context, ReadingNotificationService::class.java)
+            // Pass the notification through the Intent so the service can call
+            // startForeground(id, notification) in onStartCommand() — Android
+            // requires startForeground() within 5 seconds of startForegroundService().
+            val serviceIntent = Intent(context, ReadingNotificationService::class.java).apply {
+                putExtra(ReadingNotificationService.EXTRA_NOTIF_ID, notifId)
+                putExtra(ReadingNotificationService.EXTRA_NOTIFICATION, notification)
+            }
             ContextCompat.startForegroundService(context, serviceIntent)
+            // Also notify directly so the notification updates immediately if
+            // the service is already running (e.g. after NEXT/PREV in the receiver).
             NotificationManagerCompat.from(context).notify(notifId, notification)
         } catch (_: SecurityException) { }
     }
 
     fun hide(context: Context, bookId: Long) {
         NotificationManagerCompat.from(context).cancel(notificationId(bookId))
-        // Stop the foreground service when no notifications are active.
-        // The caller (ViewModel / NotificationActionReceiver) is responsible for
-        // only calling hide() when this is the last active book.
         context.stopService(Intent(context, ReadingNotificationService::class.java))
     }
 

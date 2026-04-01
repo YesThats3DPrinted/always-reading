@@ -417,10 +417,13 @@ private fun ReaderContent(
             }
 
             // ── Navigate to page without animation ────────────────────────────
+            // Always read window.__colW so post-reinit calls use the updated
+            // landscape/split-screen column width, not the stale portrait closure w.
             function goToPage(page) {
                 window.__currentPage = page;
+                var cw = window.__colW || w;
                 document.body.style.setProperty('transition', 'none', 'important');
-                document.body.style.transform = 'translateX(-' + (page * w) + 'px)';
+                document.body.style.transform = 'translateX(-' + (page * cw) + 'px)';
             }
 
             // ── Character offset — save position ──────────────────────────────
@@ -486,10 +489,11 @@ private fun ReaderContent(
                             range.setStart(tn, Math.min(localOff, len));
                             var rects = range.getClientRects();
                             var page;
+                            var cw2 = window.__colW || w;
                             if (rects && rects.length > 0) {
-                                page = Math.max(0, Math.floor(rects[0].left / w));
+                                page = Math.max(0, Math.floor(rects[0].left / cw2));
                             } else {
-                                page = Math.max(0, Math.floor((tn.parentElement ? tn.parentElement.offsetLeft : 0) / w));
+                                page = Math.max(0, Math.floor((tn.parentElement ? tn.parentElement.offsetLeft : 0) / cw2));
                             }
                             goToPage(page);
                             NotiBook.onScrollToPage(page);
@@ -622,9 +626,19 @@ private fun ReaderContent(
     // JS injected when orientation changes or the viewport resizes.
     // Updates column dimensions, waits for the overlay to cover the screen,
     // then restores position by char offset and hides the overlay.
+    //
+    // CRITICAL: This function is fully self-contained — it does NOT call
+    // window.__restoreByCharOffset or goToPage. Those functions read window.__colW,
+    // which is a global that could theoretically be stale. Instead, all transform
+    // and page calculations use the local `var w=$w` baked in by Kotlin, exactly
+    // as the old buildReinitJs did. This guarantees correctness regardless of global state.
     fun buildReinitJs(w: Int, h: Int, charOffset: Long) = """
         (function(){
             var w=$w; var h=$h;
+            // Increment reinit counter. If a newer call arrives, earlier ones abort.
+            window.__reinitId = (window.__reinitId || 0) + 1;
+            var myId = window.__reinitId;
+
             window.__colW = w;
             window.__colH = h;
             var de = document.documentElement;
@@ -636,17 +650,78 @@ private fun ReaderContent(
             b.style.setProperty('height',       h+'px', 'important');
             b.style.setProperty('column-width', w+'px', 'important');
             b.style.setProperty('transition',   'none', 'important');
-            // Overlay is visible — safe to reset transform so rects[0].left == layout X.
+
+            // 250ms: overlay is covering the screen.
+            // Reset transform to 0 so that getClientRects() returns layout positions
+            // (not offset by the previous transform), then wait two rAF frames for the
+            // browser to finish reflowing columns at the new width before reading rects.
             setTimeout(function(){
+                if (window.__reinitId !== myId) return;
                 b.style.transform = 'translateX(0px)';
-                var targetOffset = $charOffset;
-                if (targetOffset >= 0 && window.__restoreByCharOffset) {
-                    window.__restoreByCharOffset(targetOffset);
-                } else {
-                    NotiBook.onScrollToPage(0);
-                }
-                if (window.__fixImages) window.__fixImages();
-                NotiBook.onReady();
+
+                requestAnimationFrame(function(){
+                    if (window.__reinitId !== myId) return;
+                    requestAnimationFrame(function(){
+                        if (window.__reinitId !== myId) return;
+
+                        var targetPage = 0;
+                        var targetOffset = $charOffset;
+
+                        if (targetOffset >= 0) {
+                            try {
+                                // Scan body.textContent with the same whitespace normalization
+                                // as __getCharOffset (collapse runs of whitespace to one space)
+                                // to find the raw character index corresponding to targetOffset.
+                                var rawText = b.textContent;
+                                var normLen = 0, rawIdx = 0, inWs = false;
+                                while (rawIdx < rawText.length && normLen < targetOffset) {
+                                    var isWs = /\s/.test(rawText[rawIdx]);
+                                    if (isWs) { if (!inWs) { normLen++; inWs = true; } }
+                                    else       { normLen++; inWs = false; }
+                                    rawIdx++;
+                                }
+                                // Walk text nodes to find the node at rawIdx.
+                                var walker = document.createTreeWalker(
+                                    b, NodeFilter.SHOW_TEXT, null, false);
+                                var cumRaw = 0, tn;
+                                while ((tn = walker.nextNode())) {
+                                    var len = tn.textContent.length;
+                                    if (cumRaw + len > rawIdx) {
+                                        var localOff = rawIdx - cumRaw;
+                                        var range = document.createRange();
+                                        range.setStart(tn, Math.min(localOff, len));
+                                        var rects = range.getClientRects();
+                                        // Transform is 0, so rects[0].left == layout X directly.
+                                        // Divide by LOCAL w (not window.__colW) for safety.
+                                        if (rects && rects.length > 0) {
+                                            targetPage = Math.max(0, Math.floor(rects[0].left / w));
+                                        } else {
+                                            var pel = tn.parentElement;
+                                            if (pel) targetPage = Math.max(0, Math.floor(pel.offsetLeft / w));
+                                        }
+                                        break;
+                                    }
+                                    cumRaw += len;
+                                }
+                            } catch(e) {
+                                console.log('NotiBook reinit restore error: ' + e);
+                            }
+                        }
+
+                        // Set transform directly using local w — not via goToPage/window.__colW.
+                        window.__currentPage = targetPage;
+                        b.style.transform = 'translateX(-' + (targetPage * w) + 'px)';
+                        NotiBook.onScrollToPage(targetPage);
+
+                        if (window.__fixImages) window.__fixImages();
+
+                        // One more frame so the correct page is painted before overlay disappears.
+                        requestAnimationFrame(function(){
+                            if (window.__reinitId !== myId) return;
+                            NotiBook.onReady();
+                        });
+                    });
+                });
             }, 250);
         })()
     """.trimIndent()
