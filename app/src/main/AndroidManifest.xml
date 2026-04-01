@@ -3,8 +3,9 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".NotiBookApp"
@@ -40,9 +41,10 @@
             </intent-filter>
         </receiver>
 
-        <!-- Re-shows a snoozed notification after 1 hour -->
-        <receiver
-            android:name=".notification.SnoozeAlarmReceiver"
+        <!-- Foreground service that keeps reading notifications alive and non-swipeable -->
+        <service
+            android:name=".notification.ReadingNotificationService"
+            android:foregroundServiceType="dataSync"
             android:exported="false" />
 
     </application>

@@ -58,9 +58,14 @@ class BookRepository(
     suspend fun getAllSentencesForBook(bookId: Long): List<SentenceEntity> =
         sentenceDao.getAllForBook(bookId)
 
-    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int) =
-        bookDao.updateReaderPosition(bookId, spineIndex)
+    /** Save exact character offset when reader closes. */
+    suspend fun updateReaderCharOffset(bookId: Long, charOffset: Long) =
+        bookDao.updateReaderCharOffset(bookId, charOffset)
 
-    suspend fun updateNotifWasActive(bookId: Long, was: Boolean) =
-        bookDao.updateNotifWasActive(bookId, was)
+    /**
+     * Clear reader position so the next open uses the notification's currentIndex.
+     * Called after the user navigates via notification arrows.
+     */
+    suspend fun clearReaderCharOffset(bookId: Long) =
+        bookDao.clearReaderCharOffset(bookId)
 }

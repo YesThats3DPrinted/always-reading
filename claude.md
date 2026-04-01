@@ -14,7 +14,7 @@ NotiBook lets you read books passively throughout your day. Instead of sitting d
 The app has four main concerns:
 
 1. **Parsing** — when you import a book, it gets split into individual sentences and stored in a database
-2. **Notifications** — sentences are shown one at a time in a persistent notification with ← → navigation
+2. **Notifications** — sentences are shown one at a time in a persistent foreground-service notification with ← → navigation
 3. **Reader** — a full in-app WebView reader for when you want to read continuously
 4. **Sync** — when you close the reader, your position is saved and the notification picks up exactly where you left off
 
@@ -27,17 +27,18 @@ The app has four main concerns:
 **`NotificationHelper.kt`**
 The one place responsible for building and showing notifications. It reads the current sentence from the DB and constructs a custom notification layout. Each book gets its own notification ID (using `bookId.toInt()`) so multiple books can have active notifications simultaneously. Checks dark/light mode at build time and sets text colors accordingly, since custom notification layouts don't get automatic theming.
 
+`show()` starts `ReadingNotificationService` as a foreground service before posting the notification. This makes the notification `setOngoing(true)` — non-swipeable and always expanded.
+
+`hide()` cancels the notification AND stops the foreground service. Callers are responsible for only calling `hide()` on the last active notification (otherwise pass `stopService = false`).
+
 **`NotificationActionReceiver.kt`**
-Listens for button taps inside the notification (← →, dismiss, snooze). Uses `goAsync()` so it can do database work without timing out — Android gives BroadcastReceivers very little time by default. Updates the sentence index in the DB, then rebuilds and posts the notification with the new sentence.
+Listens for button taps inside the notification (← →, dismiss). Uses `goAsync()` so it can do database work without timing out. After a successful NEXT or PREV navigation, calls `repo.clearReaderCharOffset(bookId)` — this signals the reader to open at the notification's current sentence rather than the old char-offset position.
+
+**`ReadingNotificationService.kt`**
+Foreground service that keeps reading notifications alive and non-swipeable. Started by `NotificationHelper.show()`, stopped by `NotificationHelper.hide()`. Returns `START_STICKY` so Android restarts it if killed.
 
 **`BootReceiver.kt`**
 When the phone restarts, Android kills all notifications. This receiver fires on boot and re-posts any notifications that were active when the phone was shut down.
-
-**`SnoozeAlarmReceiver.kt`**
-Handles the snooze feature — when a snooze alarm fires, re-posts the notification.
-
-**`NotificationService.kt`**
-Empty stub. We removed the foreground service entirely because on MIUI phones, foreground service notifications can't be swiped away and behave strangely. Notifications are posted directly via `NotificationManagerCompat.notify()` instead.
 
 ---
 
@@ -78,10 +79,10 @@ Simple data class: chapter title + absolute path to the HTML file.
 Takes all the spine items and merges them into one big HTML document. For each chapter:
 - Wraps it in `<div id="chapter-N">` so we can jump to chapters by ID
 - Converts all relative `src` and `href` attributes to absolute `file://` paths so images and links work when loaded from cache
-- Annotates every block element (paragraph, heading, etc.) with `data-si` (the sentence index of the first sentence in that block) and `data-sentences` (all sentences in that block as `"index:length"` pairs) — used for exact position tracking when closing the reader
+- Annotates every block element with `data-si` (the sentence index of the first sentence in that block) — used to find the notification sentence when the reader closes
 - Adds `<span id="__nb_end"></span>` at the very end of the document — the end-of-book sentinel
 
-The combined HTML is written to `__reader.html` in the cache dir and loaded via a `file://` URL. This gives it a real file origin so images load correctly.
+The combined HTML is written to `__reader.html` in the cache dir and loaded via a `file://` URL.
 
 ---
 
@@ -93,16 +94,24 @@ Simple SharedPreferences wrapper that stores the user's font size preference (12
 **`EpubReaderViewModel.kt`**
 Manages all reader state. Key responsibilities:
 
-- **Loading** — checks if the book is still parsing, then calls EpubExtractor + EpubCombiner to prepare the HTML, then emits a `Ready` state with the file URL
+- **Loading** — calls EpubExtractor + EpubCombiner to prepare the HTML, then emits a `Ready` state with the file URL and restore parameters
 - **Page tracking** — maintains `currentPageIndex` as a StateFlow. Kotlin only ever increments or decrements this number — JS is responsible for deciding when it's allowed
-- **Position anchor** — maintains `restoreSentenceIndex`, the sentence index at the top of the current page. Updated by JS after every page turn via `onDataSi()`. Used to restore position after an orientation change
-- **Orientation re-init** — `startReinit()` shows an opaque overlay and sets a flag to skip the next `onDataSi()` call (so rotating the phone doesn't drift your reading position). `onReady()` hides the overlay once JS finishes re-laying out the columns
-- **Closing** — `closeWithPosition()` saves the current page index and sentence index to the DB, and optionally starts or restores the notification
+- **Character offset anchor** — maintains `_restoreCharOffset`, the exact normalized character count from the start of the book to the top of the current page. Updated by JS after every page turn via `onCharOffset(offset: Long)`. Used to restore position after an orientation change or on next reader open.
+- **Orientation re-init** — `startReinit()` shows an opaque overlay and sets `skipNextCharOffsetUpdate = true` (so the first post-reflow `onCharOffset` call doesn't overwrite the anchor). `onReady()` hides the overlay once JS finishes re-laying out.
+- **Notification toggle** — `notificationActive: StateFlow<Boolean>` observed from DB. `toggleNotification(enabled)` starts/stops the notification.
+- **Closing** — `onClose(sentenceIndex, charOffset, startNotification)` saves charOffset to DB (for next reader open) and sentenceIndex to DB (for the notification to display). Optionally starts the notification.
+- **Skip animation** — `skipNextPageAnimation: AtomicBoolean`. Set by `onScrollToPage()` so `LaunchedEffect(currentPageIndex)` skips the slide animation when JS already positioned the view (during restore, chapter jump, internal link).
 
 **`EpubReaderScreen.kt`**
-The actual UI. A WebView fills most of the screen, with an animated top bar that appears/disappears on center tap.
+The actual UI. A WebView fills most of the screen, with an animated two-row top bar.
 
-The screen is organized around several pieces of JS that get injected at different times:
+**Top bar (two rows):**
+- Row 1: book title · chapter title (single line, ellipsis)
+- Row 2: notification toggle | spacer | A− | A+ | chapter list
+
+The notification toggle icon (`ic_notification_reader.xml`) is full opacity when active, 35% opacity when inactive. Tapping it toggles the notification; on Android 13+ it requests `POST_NOTIFICATIONS` permission if not already granted.
+
+The screen is organized around several pieces of JS injected at different times:
 
 **At page load (`onPageFinished`):**
 Sets up the CSS column layout. The body is made exactly one viewport wide and tall, and `column-width` is set to the same value — so the browser lays out content as side-by-side columns, each one screen wide. Dimensions come from Kotlin's measured view size (always reliable) not `window.innerWidth` (can be 0 at load time).
@@ -110,29 +119,40 @@ Sets up the CSS column layout. The body is made exactly one viewport wide and ta
 **`buildJs(w, h)` — the main JS, injected once after load:**
 
 - Blocks all native touch scrolling (we handle all navigation ourselves)
-- Stores `window.__colW` and `window.__colH` (viewport dimensions) globally
-- **`sentinelVisible()`** — the end-of-book check. Calls `getBoundingClientRect()` on `<span id="__nb_end">`. If that span's left edge is currently on screen, we're on the last page. `getBoundingClientRect()` accounts for the CSS transform on the body, so it always reflects the element's actual on-screen position — no math required.
-- **Touch handling** — swipe left/right and tap left/right/center zones for navigation. Before calling `NotiBook.onNextPage()`, checks `sentinelVisible()` — if the sentinel is on screen, swipe right does nothing.
-- **`window.__getSentenceAtTop(x, y)`** — finds the exact sentence at a given point on screen using `caretRangeFromPoint()` (gets the exact character at that point), then walks up the DOM to find the enclosing block's `data-sentences` attribute, then uses the sentence lengths stored there to figure out which specific sentence is at that character position. Used both when closing the reader (to save position for the notification) and after page turns (to update the orientation-restore anchor).
-- **`tryRestore()`** — restores the saved page position when the book first opens. Polls until `scrollWidth > viewport width` so it knows the browser has finished laying out at least one column's worth of content before navigating.
-- **`fixImages()`** — CSS percentage widths and viewport units don't work reliably inside CSS columns. This function iterates every `<img>` element and sets explicit pixel dimensions via inline styles, constraining by both width and height so images always fit within one page. Exposed as `window.__fixImages` so `buildReinitJs` can call it after orientation change.
-- **Chapter tracking** — after every page turn, checks which chapter's `<div>` the current page is inside and reports it to the ViewModel via `onChapterVisible()`
+- Stores `window.__colW` and `window.__colH` globally
+- **`sentinelVisible()`** — end-of-book check. `getBoundingClientRect()` on `<span id="__nb_end">`. If that span's left edge is currently on screen, we're on the last page.
+- **Touch handling** — swipe left/right and tap left/right/center zones. Checks `sentinelVisible()` before going forward.
+- **`window.__getCharOffset(x, y)`** — counts normalized characters (whitespace collapsed with `replace(/\s+/g,' ')`) from the start of the document body to the caret at `(x, y)`. Uses `caretRangeFromPoint` + `Range.toString()`. This number is stable across font size, orientation, and viewport changes.
+- **`window.__restoreByCharOffset(targetOffset)`** — inverse of `__getCharOffset`. Scans `document.body.textContent` character-by-character simulating the same whitespace normalization to find the raw DOM offset, then uses TreeWalker to find the text node, then `getClientRects()[0].left / colW` to find the column. Calls `NotiBook.onScrollToPage(page)`.
+- **`window.__getSentenceAtTop(x, y)`** — walks up the DOM from `elementFromPoint(x, y)` looking for `data-si`. Returns the sentence index. Used when closing to find the notification sentence.
+- **`tryRestore()`** — restores position on first load. If `readerCharOffset >= 0`, calls `__restoreByCharOffset` (last action was in-reader). If `-1`, navigates to `data-si == restoreCurrentIndex` element (last action was notification). Polls `scrollWidth > viewport` before navigating so columns are fully laid out.
+- **`fixImages()`** — sets explicit pixel dimensions on `<img>` elements. CSS % and viewport units don't work reliably inside CSS columns. Exposed as `window.__fixImages` for reinit use.
+- **Chapter tracking** — after every page turn checks which chapter's `<div>` the current page is inside and reports it via `onChapterVisible()`.
+- **Chapter page breaks** — `break-before: column` on each `<div id="chapter-N">` so chapters always start on a fresh page.
 
-**`buildReinitJs(w, h, si)` — injected when orientation changes:**
-When the phone rotates, the WebView width changes. `addOnLayoutChangeListener` detects this and calls `startReinit()` (shows overlay, freezes position anchor) then runs this JS:
-1. Updates `window.__colW`, `window.__colH`, and all the CSS column dimensions to the new viewport size
-2. Waits 250ms (the overlay is definitely visible by then, safe to do invisible work)
-3. Resets the body's transform to 0 (so layout coordinates are clean)
-4. Finds the block containing `restoreSentenceIndex` via `data-sentences`
-5. Computes the character offset within that block proportionally (DB lengths are Jsoup-normalized, JS text nodes are raw — proportional mapping bridges the difference)
-6. Uses `getClientRects()` on that character position to find what column it's now in
-7. Navigates to that column and calls `NotiBook.onReady()` to hide the overlay
+**`buildReinitJs(w, h, charOffset)` — injected when orientation/size changes:**
+1. Updates `window.__colW`, `window.__colH`, and CSS column dimensions
+2. Waits 250ms (overlay is visible)
+3. Resets the body's transform to 0
+4. Calls `window.__restoreByCharOffset(charOffset)` — navigates to the saved char offset
+5. Calls `window.__fixImages()` and `NotiBook.onReady()` to hide overlay
 
-**Chapter jumps (LaunchedEffect):**
-When the user picks a chapter from the dropdown, finds that chapter's `<div>`, reads its `offsetLeft`, divides by column width to get the page number, and navigates there.
+**`LaunchedEffect(currentPageIndex)`:**
+Animates to the new page (unless `isSkippingPageAnimation()` is true — set by JS-driven navigation). After 300ms, calls `__getCharOffset(cw*0.5, 60)` and reports via `NotiBook.onCharOffset()`.
+
+**`addOnLayoutChangeListener`:**
+Fires on layout changes (rotation, split screen, PiP). Threshold: any width **or** height change > 1px. The small threshold catches all real layout changes (rotation, split screen entering/exiting, divider drag) without false positives since nothing else changes the WebView dimensions.
+
+**Chapter jumps (LaunchedEffect on `scrollToChapterCommand`):**
+Finds the chapter's `<div>`, computes `offsetLeft / colW`, navigates there.
 
 **`handleInternalLink()` in ViewModel:**
-When the user taps an internal link inside the book (e.g. a footnote), finds the target element, computes what page it's on, and navigates there.
+Intercepts link taps inside the book, finds the target element (by spine index + fragment ID), and navigates to its column.
+
+**JS bridge methods:**
+- `onPrevPage()`, `onNextPage()`, `onCenterTap()`, `onChapterVisible(idx)`, `onScrollToPage(page)`, `onInternalLink(href)` — standard navigation
+- `onCharOffset(offset: Long)` — called after page turns and after restore; updates the ViewModel's char offset anchor
+- `onReady()` — called by `buildReinitJs` when re-init is complete; hides the overlay
 
 ---
 
@@ -144,78 +164,86 @@ Room ORM. Two tables:
 One row per imported book. Key fields:
 - `currentIndex` — which sentence the notification is currently showing
 - `currentChapter` — chapter title, stored so the notification can display it
-- `readerSpineIndex` — the page index the reader was on when last closed (used to restore position on re-open)
+- `readerCharOffset` — exact character offset saved when the reader closes. `-1` means "use notification's currentIndex on next reader open" (set by `NotificationActionReceiver` after each NEXT/PREV). `>= 0` means restore to this exact character position.
 - `notificationActive` — whether this book's notification is currently showing
-- `notifWasActiveBeforeReader` — when you open the reader, if the notification was active it gets hidden. This flag remembers that so it can be restored when you close the reader.
-- `isParsing` — true while the parse worker is running; reader shows an error if you try to open a still-parsing book
+- `isParsing` — true while the parse worker is running; library card is non-clickable while true
 
 **`sentences`**
 One row per sentence. Key fields:
 - `sentenceIndex` — global 0-based index across the whole book
 - `spineItemIndex` — which chapter (spine item) this sentence is in
-- `blockIndex` — which block element within that chapter (used to match sentences back to HTML elements for `data-sentences` annotation)
+- `blockIndex` — which block element within that chapter (used to match sentences back to HTML elements for `data-si` annotation)
 - `type` — SENTENCE, IMAGE, TABLE, or DIVIDER
 
-**Schema version: 2**
+**Schema version: 4**
 
 ---
 
 ### UI (`ui/`)
 
 **`LibraryScreen.kt`**
-Shows all imported books as cards. Tapping any book opens the reader (`reader/{bookId}` route). All books — EPUB and TXT — go through the same reader.
+Shows all imported books as cards. Tapping a card opens the reader, but only if `!book.isParsing` — cards are non-clickable while parsing (the progress bar is already visible as feedback). Long-press enters selection mode for deletion.
 
 **`AppNavigation.kt`**
 Defines the nav graph. Also observes `pendingOpenBookId` on `NotiBookApp` — when the user taps a notification while the app is already open, this triggers navigation to the correct book without restarting the activity.
-
-**`BookDetailScreen.kt`**
-Currently unused for navigation (all books go to the reader), but still exists for the notification toggle, restart from beginning, and remove book functionality.
 
 **`MainActivity.kt`**
 Reads `bookId` from the intent extras set by notification taps. Passes it to `AppNavigation` as the initial book to open. Also handles `onNewIntent` for the case where the app is already open and another notification is tapped.
 
 **`NotiBookApp.kt`**
-Application class. Creates the notification channel, calls `restoreActiveNotifications()` on startup (re-shows any notifications that were active when the app was last killed), and exposes `appScope` — a coroutine scope that survives ViewModel lifecycle. Important: position saves when closing the reader use `appScope` not `viewModelScope`, because `viewModelScope` cancels the moment you navigate away, which would abort the save.
+Application class. Creates the notification channel, calls `restoreActiveNotifications()` on startup, and exposes `appScope` — a coroutine scope that survives ViewModel lifecycle. Position saves on reader close use `appScope` not `viewModelScope`, because `viewModelScope` cancels the moment you navigate away.
 
 ---
 
 ## Key Design Decisions
 
-### Why no foreground service?
-On MIUI (Xiaomi phones), foreground service notifications are force-expanded and can't be swiped away. Removed it entirely — notifications are posted directly. Trade-off: Android can kill the notification under memory pressure, but that's acceptable for this use case.
+### Why foreground service?
+`setOngoing(true)` on the notification combined with a running foreground service makes notifications non-swipeable and always-expanded. `ReadingNotificationService` is started when the first notification is shown and stopped when the last one is dismissed. On Android 14+, `foregroundServiceType="dataSync"` is required.
 
 ### Why one big HTML document instead of one chapter at a time?
-The whole book is combined into one HTML file and paginated with CSS columns. This makes inter-chapter links, chapter jumps, and smooth chapter-boundary navigation trivial. The downside is memory usage and the browser's lazy column layout computation — but for text-heavy books the memory footprint is manageable, and we've designed around the lazy layout issue (sentinel for end-of-book, proportional restore for orientation changes).
+The whole book is combined into one HTML file and paginated with CSS columns. This makes inter-chapter links, chapter jumps, and smooth chapter-boundary navigation trivial.
+
+### Why character offset for position saving?
+The reader saves and restores position using a character count from the start of the document, not a page number or sentence index. This is stable across:
+- Font size changes (different column counts)
+- Orientation changes (different column widths)
+- Screen size changes (split screen, PiP)
+
+`window.__getCharOffset(x, y)` counts normalized characters (whitespace collapsed with `replace(/\s+/g,' ')`) using a Range from body start to the caret. `window.__restoreByCharOffset(target)` scans `textContent` to find the equivalent raw offset, walks text nodes, and navigates to the column.
+
+### Why `readerCharOffset = -1` when notification navigates?
+When the user taps ← or → in the notification, they're advancing through the book via the notification, not the reader. The next time the reader opens, it should show the notification's current sentence — not the old reader position. `NotificationActionReceiver` sets `readerCharOffset = -1` after each successful navigation. The reader's `tryRestore()` checks: if `-1`, navigate to `currentIndex` sentence; if `>= 0`, restore by char offset.
 
 ### Why `canonicalPath` everywhere?
-Android has `/data/user/0/com.notibook.app/` as a symlink to `/data/data/com.notibook.app/`. If you use `absolutePath` on one side and `canonicalPath` on the other, path comparisons silently fail. Always use `canonicalPath` in the epub package.
+Android has `/data/user/0/com.notibook.app/` as a symlink to `/data/data/com.notibook.app/`. If you use `absolutePath` on one side and `canonicalPath` on the other, path comparisons silently fail.
 
 ### Why does JS own the end-of-book decision?
-The reader has no concept of "total pages" in Kotlin. The browser computes CSS columns lazily — it only lays out columns near the current viewport. Reading `scrollWidth` (the total document width) too early gives a wrong answer for large books. Instead, JS checks whether `<span id="__nb_end">` is currently visible on screen via `getBoundingClientRect()` before every forward navigation. If the sentinel is on screen, we're on the last page. This requires zero math and zero cross-thread communication.
+The reader has no concept of "total pages" in Kotlin. The browser computes CSS columns lazily. Instead, JS checks whether `<span id="__nb_end">` is currently visible on screen via `getBoundingClientRect()` before every forward navigation. If the sentinel is on screen, we're on the last page.
 
 ### Why `appScope` for position saves?
-`viewModelScope` is cancelled immediately when you navigate back. Any database write launched there may never complete. `appScope` lives for the lifetime of the process and guarantees the save finishes.
+`viewModelScope` is cancelled immediately when you navigate back. Any database write launched there may never complete. `appScope` lives for the lifetime of the process.
 
 ### Why `configChanges="orientation|screenSize"` in the manifest?
-Prevents Android from destroying and recreating the Activity on rotation. Without this, the WebView would reload the entire book on every orientation change. With it, the Activity survives, the WebView stays loaded, and we just need to update the CSS column dimensions and restore the position — handled by `buildReinitJs`.
+Prevents Android from destroying and recreating the Activity on rotation. The WebView stays loaded; we just update CSS column dimensions and restore position via `buildReinitJs`.
 
-### Why is `@JavascriptInterface` threading important?
-Methods marked `@JavascriptInterface` run on a background thread, not the main thread. Any UI operations must be dispatched via `webView.post { }`. The bridge is sequential though — calls made from JS in order are received in order — which is why calling `onTotalPages()` before `onNextPage()` (back when that existed) was safe.
+### Why `skipNextPageAnimation`?
+When JS calls `NotiBook.onScrollToPage(page)` (after restore, chapter jump, internal link), Kotlin updates `currentPageIndex` which triggers `LaunchedEffect`. Without the flag, `LaunchedEffect` would slide-animate to a page that JS has already positioned — causing a visible snap. The `AtomicBoolean` lets JS tell Kotlin "I already moved, skip the animation."
 
 ---
 
 ## How Position Tracking Works End-to-End
 
-This is the most complex part of the app. Here's the full flow:
-
 **While reading:**
-After every page turn, JS waits 300ms (for the animation to finish), then calls `window.__getSentenceAtTop(screenCenterX, 60)`. This function uses `caretRangeFromPoint()` to find the exact character at that point, walks up the DOM to the enclosing block's `data-sentences` attribute, and uses the stored sentence lengths to identify the exact sentence. The result is sent to `onDataSi()` in the ViewModel, which stores it as `restoreSentenceIndex`.
+After every page turn, JS waits 300ms for the animation, then calls `window.__getCharOffset(centerX, 60)`. This uses `caretRangeFromPoint` to find the character at the center-top of the screen, then creates a Range from body start to that point and returns the normalized length. Sent to `onCharOffset()` in the ViewModel, stored as `_restoreCharOffset`.
 
 **On orientation change:**
-`startReinit()` freezes `restoreSentenceIndex` (by setting `skipNextDataSiUpdate = true`) so the first `onDataSi()` call after re-init — which comes from the page animation, not the user — doesn't drift the anchor. `buildReinitJs` uses the frozen `restoreSentenceIndex` to find the sentence's new position in the reflowed columns and navigate there.
+`startReinit()` sets `skipNextCharOffsetUpdate = true` so the first `onCharOffset()` after re-init doesn't overwrite the anchor. `buildReinitJs` is injected with the frozen anchor value. Inside `buildReinitJs`, after a 250ms delay (overlay is covering the screen), `__restoreByCharOffset(anchor)` navigates to the correct column in the new layout.
 
 **On close:**
-JS calls `window.__getSentenceAtTop()` one more time to get the sentence at the top of the current page, passes it to `closeWithPosition()` in the ViewModel, which writes it to the DB. The notification then uses that sentence index.
+JS calls `__getCharOffset(w*0.5, 60)` for the char offset, and walks `elementFromPoint(w*0.5, 60)` up to the nearest `data-si` for the notification sentence index. Both are returned to `vm.onClose()`, which saves charOffset to `readerCharOffset` and sentenceIndex to `currentIndex` in the DB.
+
+**On next open:**
+`loadEpubReader` reads `book.readerCharOffset` and `book.currentIndex`, passes them to `ReaderState.Ready`. `buildJs` embeds them as `targetCharOffset` and `targetSi`. `tryRestore()` uses whichever is appropriate.
 
 ---
 
@@ -236,13 +264,13 @@ cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
 ./gradlew clean assembleDebug
 ```
 
-**After changing sentence parsing (SentenceSplitter, EpubParser, TxtParser):** remove and re-import all books — sentences are stored in the DB and won't be re-split automatically.
+**After changing sentence parsing:** remove and re-import all books.
 
-**After changing EpubCombiner or buildTxtHtml:** re-import books to regenerate `__reader.html` with the latest HTML structure.
+**After changing EpubCombiner or buildTxtHtml:** re-import books to regenerate `__reader.html`.
 
 ---
 
-## DB Schema (version 2)
+## DB Schema (version 4)
 
 ### `books` table
 | Column | Type | Notes |
@@ -253,13 +281,11 @@ cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
 | filePath | String | original file path |
 | totalSentences | Int | 0 while parsing |
 | parsedSentenceCount | Int | for progress tracking |
-| isParsing | Boolean | reader blocks if true |
+| isParsing | Boolean | card non-clickable while true |
 | currentIndex | Int | current notification sentence |
 | currentChapter | String | shown in notification |
 | notificationActive | Boolean | is notification currently showing |
-| readerSpineIndex | Int | last page index in reader |
-| readerScrollPercent | Float | unused, to be removed in v3 |
-| notifWasActiveBeforeReader | Boolean | restore notif on reader close |
+| readerCharOffset | Long | -1 = use currentIndex; ≥0 = exact char offset |
 
 ### `sentences` table
 | Column | Type | Notes |

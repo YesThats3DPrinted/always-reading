@@ -1,8 +1,11 @@
 package com.notibook.app.ui.reader
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -11,6 +14,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -18,24 +23,25 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.notibook.app.R
 import com.notibook.app.epub.SpineItem
 
 private val BG_COLOR   = Color(0xFF1A1A1A)
 private val TEXT_COLOR = Color(0xFFE0E0E0)
 private val BAR_COLOR  = Color(0xFF2C2C2C)
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EpubReaderScreen(
     bookId: Long,
@@ -44,39 +50,60 @@ fun EpubReaderScreen(
 ) {
     LaunchedEffect(bookId) { vm.init(bookId) }
 
-    val state            by vm.state.collectAsState()
-    val currentPageIndex by vm.currentPageIndex.collectAsState()
-    val scrollToChapter  by vm.scrollToChapterCommand.collectAsState()
-    val topBarVisible    by vm.topBarVisible.collectAsState()
-    val isReiniting      by vm.isReiniting.collectAsState()
-    val prefs            = vm.readerPreferences
+    val state              by vm.state.collectAsState()
+    val currentPageIndex   by vm.currentPageIndex.collectAsState()
+    val scrollToChapter    by vm.scrollToChapterCommand.collectAsState()
+    val topBarVisible      by vm.topBarVisible.collectAsState()
+    val isReiniting        by vm.isReiniting.collectAsState()
+    val notificationActive by vm.notificationActive.collectAsState()
+    val chapterTitle       by vm.currentChapterTitle.collectAsState()
+    val prefs              = vm.readerPreferences
 
     var fontSize        by remember { mutableIntStateOf(prefs.fontSize) }
-    var showMenu        by remember { mutableStateOf(false) }
     var showChapterList by remember { mutableStateOf(false) }
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // CSS-columns pagination: animate the slide, use __colW for exact column alignment.
-    // Also reports data-si of the top element after the animation so the ViewModel always
-    // has a text-level anchor for orientation-change restoration.
+    // Android 13+ notification permission handling
+    val context = LocalContext.current
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) vm.toggleNotification(true) }
+
+    fun requestNotificationToggle(enable: Boolean) {
+        if (!enable) { vm.toggleNotification(false); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (granted) vm.toggleNotification(true)
+            else notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.toggleNotification(true)
+        }
+    }
+
+    // CSS-columns pagination: animate the slide (unless JS already positioned),
+    // then report char offset after the animation finishes so the ViewModel always
+    // has a fresh anchor for orientation-change restoration.
     LaunchedEffect(currentPageIndex) {
-        webViewRef.value?.evaluateJavascript(
-            """(function(){
+        val wv = webViewRef.value ?: return@LaunchedEffect
+        val skipAnim = vm.isSkippingPageAnimation()
+        val animJs = if (!skipAnim) """
+            window.__currentPage=$currentPageIndex;
+            document.body.style.setProperty('transition','transform 0.25s ease','important');
+            document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';
+        """ else ""
+        wv.evaluateJavascript("""
+            (function(){
                 var cw=window.__colW||window.innerWidth;
-                window.__currentPage=$currentPageIndex;
-                document.body.style.setProperty('transition','transform 0.25s ease','important');
-                document.body.style.transform='translateX(-'+($currentPageIndex*cw)+'px)';
+                $animJs
                 setTimeout(function(){
-                    var el=document.elementFromPoint(cw*0.5,60);
-                    for(var i=0;i<8&&el;i++){
-                        if(el.dataset&&el.dataset.si!==undefined){NotiBook.onDataSi(parseInt(el.dataset.si));return;}
-                        el=el.parentElement;
-                    }
+                    var offset=window.__getCharOffset?window.__getCharOffset(cw*0.5,60):0;
+                    NotiBook.onCharOffset(offset);
                 },300);
-            })()""",
-            null
-        )
+            })()
+        """.trimIndent(), null)
     }
 
     // Jump to chapter when ViewModel emits the command
@@ -99,23 +126,30 @@ fun EpubReaderScreen(
     fun closeReader(startNotification: Boolean) {
         val wv = webViewRef.value
         if (wv != null) {
-            // Use __getSentenceAtTop (defined in buildJs) which combines caretRangeFromPoint
-            // with data-sentences to find the exact sentence at the top of the current page.
+            // Get both char offset (for reader restore) and data-si (for notification position).
+            // Return as "charOffset|sentenceIndex" so we can parse the single callback string.
             wv.evaluateJavascript("""
                 (function(){
-                    var si = window.__getSentenceAtTop
-                        ? window.__getSentenceAtTop(window.innerWidth * 0.5, 60)
-                        : -1;
-                    return si >= 0 ? '' + si : '-1';
+                    var w=window.__colW||window.innerWidth;
+                    var charOffset=window.__getCharOffset?window.__getCharOffset(w*0.5,60):0;
+                    var si=-1;
+                    var el=document.elementFromPoint(w*0.5,60);
+                    for(var i=0;i<8&&el;i++){
+                        if(el.dataset&&el.dataset.si!==undefined){si=parseInt(el.dataset.si);break;}
+                        el=el.parentElement;
+                    }
+                    return ''+charOffset+'|'+(si>=0?si:0);
                 })()
             """.trimIndent()) { raw ->
-                val si = raw?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
-                val sentenceIndex = if (si < 0) 0 else si
-                vm.closeWithPosition(sentenceIndex, startNotification)
+                val clean = raw?.trim()?.removeSurrounding("\"") ?: "0|0"
+                val parts = clean.split("|")
+                val charOffset = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+                val si = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                vm.onClose(si, charOffset, startNotification)
                 onClose()
             }
         } else {
-            vm.closeWithPosition(0, startNotification)
+            vm.onClose(0, -1L, startNotification)
             onClose()
         }
     }
@@ -145,136 +179,152 @@ fun EpubReaderScreen(
             }
 
             is ReaderState.Ready -> ReaderContent(
-                combinedHtml          = s.combinedHtml,
-                baseUrl               = s.baseUrl,
-                restorePageIndex      = s.restorePageIndex,
-                spineItems            = s.spineItems,
-                fontSize              = fontSize,
-                onPrevPage            = { vm.onPrevPage() },
-                onNextPage            = { vm.onNextPage() },
-                onCenterTap           = { vm.onCenterTap() },
-                onChapterVisible      = { idx -> vm.onChapterVisible(idx) },
-                onScrollToPage        = { page -> vm.onScrollToPage(page) },
-                onInternalLink        = { href -> vm.handleInternalLink(href, webViewRef.value) },
-                onDataSi              = { si -> vm.onDataSi(si) },
-                onReady               = { vm.onReady() },
-                onStartReinit         = { vm.startReinit() },
-                restoreSentenceIndex  = { vm.restoreSentenceIndex },
-                webViewRef            = webViewRef
+                baseUrl              = s.baseUrl,
+                combinedHtml         = s.combinedHtml,
+                restoreCharOffset    = s.restoreCharOffset,
+                restoreCurrentIndex  = s.restoreCurrentIndex,
+                spineItems           = s.spineItems,
+                fontSize             = fontSize,
+                onPrevPage           = { vm.onPrevPage() },
+                onNextPage           = { vm.onNextPage() },
+                onCenterTap          = { vm.onCenterTap() },
+                onChapterVisible     = { idx -> vm.onChapterVisible(idx) },
+                onScrollToPage       = { page -> vm.onScrollToPage(page) },
+                onInternalLink       = { href -> vm.handleInternalLink(href, webViewRef.value) },
+                onCharOffset         = { offset -> vm.onCharOffset(offset) },
+                onReady              = { vm.onReady() },
+                onStartReinit        = { vm.startReinit() },
+                restoreCharOffsetRef = { vm.restoreCharOffset },
+                webViewRef           = webViewRef
             )
         }
 
         // Opaque overlay shown while CSS columns re-initialize after orientation change.
-        // Hides the brief reflow animation so the user sees a clean transition.
         if (isReiniting) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(BG_COLOR)
-            )
+            Box(modifier = Modifier.fillMaxSize().background(BG_COLOR))
         }
 
+        // Two-row top bar: Row 1 = title · chapter, Row 2 = actions
         AnimatedVisibility(
             visible  = topBarVisible,
             enter    = slideInVertically(initialOffsetY = { -it }),
             exit     = slideOutVertically(targetOffsetY = { -it }),
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
-            TopAppBar(
-                title = {
-                    Text(bookTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                },
-                actions = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(BAR_COLOR)
+                    .padding(horizontal = 4.dp)
+            ) {
+                // Row 1: book title · chapter title
+                val titleLine = buildString {
+                    append(bookTitle)
+                    if (chapterTitle.isNotBlank()) append(" · $chapterTitle")
+                }
+                Text(
+                    text     = titleLine,
+                    color    = TEXT_COLOR,
+                    style    = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp)
+                )
+
+                // Row 2: notification toggle | spacer | font A- | font A+ | chapter list
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier          = Modifier.fillMaxWidth()
+                ) {
+                    // Notification toggle
+                    IconButton(
+                        onClick = { requestNotificationToggle(!notificationActive) }
+                    ) {
+                        Icon(
+                            painter            = painterResource(R.drawable.ic_notification_reader),
+                            contentDescription = if (notificationActive) "Disable notification" else "Enable notification",
+                            tint               = if (notificationActive) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.35f)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // Font size decrease
+                    TextButton(
+                        onClick          = {
+                            if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
+                                fontSize -= 2; vm.setFontSize(fontSize)
+                            }
+                        },
+                        contentPadding   = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "A",
+                            color = TEXT_COLOR.copy(alpha = if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) 1f else 0.35f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "−",
+                            color = TEXT_COLOR.copy(alpha = if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) 1f else 0.35f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    // Font size increase
+                    TextButton(
+                        onClick          = {
+                            if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
+                                fontSize += 2; vm.setFontSize(fontSize)
+                            }
+                        },
+                        contentPadding   = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "A",
+                            color = TEXT_COLOR.copy(alpha = if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) 1f else 0.35f),
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            "+",
+                            color = TEXT_COLOR.copy(alpha = if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) 1f else 0.35f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    // Chapter list
                     if (spineItems.isNotEmpty()) {
                         Box {
                             IconButton(onClick = { showChapterList = true }) {
-                                Icon(Icons.AutoMirrored.Filled.FormatListBulleted, contentDescription = "Chapters")
+                                Icon(
+                                    Icons.AutoMirrored.Filled.FormatListBulleted,
+                                    contentDescription = "Chapters",
+                                    tint               = TEXT_COLOR
+                                )
                             }
                             DropdownMenu(
-                                expanded = showChapterList,
-                                onDismissRequest = { showChapterList = false }
+                                expanded          = showChapterList,
+                                onDismissRequest  = { showChapterList = false }
                             ) {
                                 spineItems.forEachIndexed { index, item ->
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = item.chapterTitle.ifBlank { "Chapter ${index + 1}" },
+                                                text     = item.chapterTitle.ifBlank { "Chapter ${index + 1}" },
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                         },
-                                        onClick = { showChapterList = false; vm.scrollToChapter(index) }
+                                        onClick = {
+                                            showChapterList = false
+                                            vm.scrollToChapter(index)
+                                        }
                                     )
                                 }
                             }
                         }
                     }
-
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    .width(200.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "Font size",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(
-                                    onClick = {
-                                        if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
-                                            fontSize -= 2; vm.setFontSize(fontSize)
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(36.dp)
-                                ) { Text("−", style = MaterialTheme.typography.titleMedium) }
-                                Text(
-                                    "${fontSize}sp",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.width(44.dp)
-                                )
-                                TextButton(
-                                    onClick = {
-                                        if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
-                                            fontSize += 2; vm.setFontSize(fontSize)
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(36.dp)
-                                ) { Text("+", style = MaterialTheme.typography.titleMedium) }
-                            }
-
-                            HorizontalDivider()
-
-                            DropdownMenuItem(
-                                text = { Text("Close & start notification") },
-                                onClick = { showMenu = false; closeReader(startNotification = true) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Close") },
-                                onClick = { showMenu = false; closeReader(startNotification = false) }
-                            )
-                        }
-                    }
-                },
-                windowInsets = WindowInsets(0, 0, 0, 0),
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor         = BAR_COLOR,
-                    titleContentColor      = TEXT_COLOR,
-                    actionIconContentColor = TEXT_COLOR
-                )
-            )
+                }
+            }
         }
     }
 }
@@ -284,9 +334,10 @@ fun EpubReaderScreen(
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun ReaderContent(
-    combinedHtml: String,
     baseUrl: String,
-    restorePageIndex: Int,
+    combinedHtml: String,
+    restoreCharOffset: Long,
+    restoreCurrentIndex: Int,
     @Suppress("UNUSED_PARAMETER") spineItems: List<SpineItem>,
     fontSize: Int,
     onPrevPage: () -> Unit,
@@ -295,10 +346,10 @@ private fun ReaderContent(
     onChapterVisible: (Int) -> Unit,
     onScrollToPage: (Int) -> Unit,
     onInternalLink: (String) -> Unit,
-    onDataSi: (Int) -> Unit,
+    onCharOffset: (Long) -> Unit,
     onReady: () -> Unit,
     onStartReinit: () -> Unit,
-    restoreSentenceIndex: () -> Int,   // lambda so factory always reads latest value
+    restoreCharOffsetRef: () -> Long,  // lambda so layout listener always reads latest value
     webViewRef: MutableState<WebView?>
 ) {
     fun buildCss() = buildString {
@@ -308,10 +359,7 @@ private fun ReaderContent(
         append(" box-sizing: border-box !important;")
         append(" overflow-wrap: break-word !important; word-break: break-word !important; }")
         append(" a, a * { color: #7CB9E8 !important; }")
-        // html clips to exactly one viewport — overflow:hidden here, NOT on body
         append(" html { height: 100% !important; overflow: hidden !important; }")
-        // body expands freely (overflow:visible) so CSS columns can lay out horizontally;
-        // exact width/height set in JS via window.innerWidth/innerHeight (no vh/vw)
         append(" body { background: #1A1A1A !important; color: #E0E0E0 !important;")
         append(" margin: 0 !important; padding: 0 !important;")
         append(" overflow: visible !important;")
@@ -320,35 +368,29 @@ private fun ReaderContent(
         append(" font-size: ${fontSize}px !important;")
         append(" font-family: serif !important;")
         append(" line-height: 1.6 !important; }")
-        // Use vw/vh (viewport units) not % for max-width/max-height on images.
-        // In Android WebView CSS columns, the containing block for elements in
-        // overflow columns resolves to 0px, so max-width:100% collapses images to 0×0.
-        // Viewport units are always based on the actual viewport size, never 0.
+        // Viewport units (vw/vh) for images — % collapses to 0 inside CSS columns
         append(" img { max-width: 100vw !important; width: auto !important;")
         append(" height: auto !important; max-height: 100vh !important;")
         append(" break-inside: avoid !important; page-break-inside: avoid !important; }")
-        // Zero out browser default figure margins (40px each side) so images sit flush
         append(" figure { margin: 0 !important; padding: 0 !important; }")
         append(" table { width: 100% !important; }")
         append(" pre, code { white-space: pre-wrap !important; }")
     }
 
-    // w/h passed from Kotlin measured dimensions — never rely on window.innerWidth/Height
-    // in JS which can be 0 if onPageFinished fires before the view is laid out.
+    // Main JS injected once after page load.
+    // w/h from Kotlin measured dimensions — never use window.innerWidth which can be 0.
     fun buildJs(w: Int, h: Int) = """
         (function() {
-            // ── Block native scroll (we handle all navigation ourselves) ──────
+            // ── Block native scroll (all navigation handled by us) ────────────
             document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
 
-            // ── Dimensions from Kotlin layout (always correct) ────────────────
+            // ── Dimensions from Kotlin layout (always correct) ─────────────────
             var w = $w; var h = $h;
-            // Store column width and height globally so fixImages and reinit use them
             window.__colW = w;
             window.__colH = h;
-            // Hard clip at html bounds (overflow:hidden on root propagates to viewport, not a clip)
             document.documentElement.style.setProperty('clip-path', 'inset(0)', 'important');
 
-            // ── Chapter tracking (offsetLeft in column layout) ────────────────
+            // ── Chapter tracking ──────────────────────────────────────────────
             var chapters = [], i = 0;
             while (true) {
                 var el = document.getElementById('chapter-' + i);
@@ -365,10 +407,8 @@ private fun ReaderContent(
             }
 
             // ── End-of-book guard ─────────────────────────────────────────────
-            // Returns true if there is a next page by checking whether the sentinel
-            // span at the end of the document is currently visible in the viewport.
-            // getBoundingClientRect() accounts for the CSS transform on the body,
-            // so rect.left reflects the element's actual on-screen position.
+            // getBoundingClientRect() accounts for the body's CSS transform, so
+            // rect.left reflects the element's actual on-screen X position.
             function sentinelVisible() {
                 var end = document.getElementById('__nb_end');
                 if (!end) return false;
@@ -376,86 +416,101 @@ private fun ReaderContent(
                 return rect.left >= 0 && rect.left < w;
             }
 
-            // ── Exact sentence lookup via caretRangeFromPoint + data-sentences ──
-            // Returns the exact sentence index at viewport point (x, y).
-            // Uses caretRangeFromPoint to get the character position, then walks
-            // up the DOM to the nearest block with data-sentences, then uses the
-            // sentence lengths in that attribute to find the exact sentence.
-            // Falls back to data-si walk if data-sentences is not present.
-            window.__getSentenceAtTop = function(x, y) {
-                var range = null;
-                try {
-                    if (document.caretRangeFromPoint) {
-                        range = document.caretRangeFromPoint(x, y);
-                    } else if (document.caretPositionFromPoint) {
-                        var pos = document.caretPositionFromPoint(x, y);
-                        if (pos) {
-                            range = document.createRange();
-                            range.setStart(pos.offsetNode, pos.offset);
-                        }
-                    }
-                } catch(e) {}
-
-                // Walk up to nearest block with data-sentences
-                var node = range ? range.startContainer : document.elementFromPoint(x, y);
-                var blockEl = (node && node.nodeType !== 1) ? node.parentNode : node;
-                var depth = 0;
-                while (blockEl && !blockEl.dataset.sentences && depth < 12) {
-                    blockEl = blockEl.parentElement; depth++;
-                }
-
-                if (!blockEl || !blockEl.dataset.sentences) {
-                    // Fallback: walk up looking for data-si
-                    var el = document.elementFromPoint(x, y);
-                    for (var i = 0; i < 8 && el; i++) {
-                        if (el.dataset && el.dataset.si !== undefined) return parseInt(el.dataset.si);
-                        el = el.parentElement;
-                    }
-                    return -1;
-                }
-
-                // Get char offset within block using TreeWalker
-                var charOffset = 0;
-                if (range && range.startContainer) {
-                    try {
-                        var walker = document.createTreeWalker(
-                            blockEl, NodeFilter.SHOW_TEXT, null, false);
-                        var tn;
-                        while ((tn = walker.nextNode())) {
-                            if (tn === range.startContainer) {
-                                charOffset += range.startOffset; break;
-                            }
-                            charOffset += tn.textContent.length;
-                        }
-                    } catch(e) {}
-                }
-
-                // Find sentence at charOffset using data-sentences
-                var entries = blockEl.dataset.sentences.split(',');
-                var cumLen = 0;
-                for (var i = 0; i < entries.length; i++) {
-                    var parts = entries[i].split(':');
-                    var si = parseInt(parts[0]);
-                    var len = parseInt(parts[1]);
-                    cumLen += len + 1; // +1 for space between sentences
-                    if (charOffset < cumLen) return si;
-                }
-                return parseInt(entries[entries.length - 1].split(':')[0]);
-            };
-
-            // ── data-si tracking ──────────────────────────────────────────────
-            // Reports the exact sentence index at the top of the current page.
-            function reportDataSi() {
-                var si = window.__getSentenceAtTop(w * 0.5, 60);
-                if (si >= 0) NotiBook.onDataSi(si);
-            }
-
-            // ── Navigate to page instantly (restore/chapter-jump — no animation) ─
+            // ── Navigate to page without animation ────────────────────────────
             function goToPage(page) {
                 window.__currentPage = page;
                 document.body.style.setProperty('transition', 'none', 'important');
                 document.body.style.transform = 'translateX(-' + (page * w) + 'px)';
             }
+
+            // ── Character offset — save position ──────────────────────────────
+            // Returns the number of normalized characters (whitespace collapsed)
+            // from the start of body to the caret at (x, y).
+            // Consistent across font sizes, orientations, and viewport changes.
+            window.__getCharOffset = function(x, y) {
+                try {
+                    var caret = null;
+                    if (document.caretRangeFromPoint) {
+                        caret = document.caretRangeFromPoint(x, y);
+                    } else if (document.caretPositionFromPoint) {
+                        var pos = document.caretPositionFromPoint(x, y);
+                        if (pos) {
+                            caret = document.createRange();
+                            caret.setStart(pos.offsetNode, pos.offset);
+                        }
+                    }
+                    if (!caret) return 0;
+                    var r = document.createRange();
+                    r.setStart(document.body, 0);
+                    r.setEnd(caret.startContainer, caret.startOffset);
+                    return r.toString().replace(/\s+/g, ' ').length;
+                } catch(e) { return 0; }
+            };
+
+            // ── Character offset — restore position ───────────────────────────
+            // Finds the DOM position corresponding to targetOffset normalized chars
+            // from the start of body, then navigates to that column.
+            window.__restoreByCharOffset = function(targetOffset) {
+                if (targetOffset <= 0) {
+                    goToPage(0);
+                    NotiBook.onScrollToPage(0);
+                    return;
+                }
+                try {
+                    // Scan rawText character by character, simulating replace(/\s+/g,' '),
+                    // to find rawIdx where normalized count reaches targetOffset.
+                    var rawText = document.body.textContent;
+                    var normLen = 0;
+                    var rawIdx  = 0;
+                    var inWs    = false;
+                    while (rawIdx < rawText.length && normLen < targetOffset) {
+                        var isWs = /\s/.test(rawText[rawIdx]);
+                        if (isWs) {
+                            if (!inWs) { normLen++; inWs = true; }
+                        } else {
+                            normLen++;
+                            inWs = false;
+                        }
+                        rawIdx++;
+                    }
+
+                    // Walk text nodes to find the node containing rawIdx
+                    var walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_TEXT, null, false);
+                    var cumRaw = 0, tn;
+                    while ((tn = walker.nextNode())) {
+                        var len = tn.textContent.length;
+                        if (cumRaw + len > rawIdx) {
+                            var localOff = rawIdx - cumRaw;
+                            var range = document.createRange();
+                            range.setStart(tn, Math.min(localOff, len));
+                            var rects = range.getClientRects();
+                            var page;
+                            if (rects && rects.length > 0) {
+                                page = Math.max(0, Math.floor(rects[0].left / w));
+                            } else {
+                                page = Math.max(0, Math.floor((tn.parentElement ? tn.parentElement.offsetLeft : 0) / w));
+                            }
+                            goToPage(page);
+                            NotiBook.onScrollToPage(page);
+                            return;
+                        }
+                        cumRaw += len;
+                    }
+                } catch(e) {
+                    console.log('NotiBook restoreByCharOffset error: ' + e);
+                }
+            };
+
+            // ── Sentence at top (data-si walk — used when closing the reader) ─
+            window.__getSentenceAtTop = function(x, y) {
+                var el = document.elementFromPoint(x, y);
+                for (var i = 0; i < 8 && el; i++) {
+                    if (el.dataset && el.dataset.si !== undefined) return parseInt(el.dataset.si);
+                    el = el.parentElement;
+                }
+                return -1;
+            };
 
             // ── Tap & swipe handling ──────────────────────────────────────────
             var touchStartX = 0, touchStartY = 0, touchStartTime = 0;
@@ -499,49 +554,22 @@ private fun ReaderContent(
                 NotiBook.onInternalLink(href);
             }, true);
 
-            // ── Restore page position ─────────────────────────────────────────
-            var targetPage = $restorePageIndex;
-            window.__currentPage = targetPage;
-            function tryRestore() {
-                // Wait until browser has laid out columns (scrollWidth grows beyond one viewport)
-                if (document.body.scrollWidth <= w + 5 && targetPage > 0) {
-                    setTimeout(tryRestore, 300); return;
-                }
-                goToPage(targetPage);
-                if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
-                // Report data-si after page is set so ViewModel has an anchor for re-init
-                setTimeout(reportDataSi, 100);
-            }
-            // Small delay lets the browser finish column layout before we read scrollWidth
-            setTimeout(function() { tryRestore(); }, 600);
-
             // ── Chapter page breaks ───────────────────────────────────────────
-            // Force each chapter (except the first) to start on a fresh column.
-            // break-before: column is the CSS multi-column equivalent of page-break-before.
             var chapterEls = document.querySelectorAll('[id^="chapter-"]');
             for (var ci = 1; ci < chapterEls.length; ci++) {
                 chapterEls[ci].style.setProperty('break-before',      'column', 'important');
                 chapterEls[ci].style.setProperty('page-break-before', 'always', 'important');
             }
 
-            // ── Fix image sizing via JS (CSS % and vw unreliable in columns) ───
-            // Inline styles set via JS have the highest cascade priority.
+            // ── Image sizing (CSS % and vw unreliable inside columns) ─────────
             function fixImages() {
                 var cw = window.__colW || window.innerWidth || $w;
                 var ch = window.__colH || window.innerHeight || $h;
                 var imgs = document.querySelectorAll('img');
-                console.log('fixImages: found ' + imgs.length + ' imgs, colW=' + cw + ' colH=' + ch);
                 for (var i = 0; i < imgs.length; i++) {
                     var img = imgs[i];
-                    console.log('img[' + i + '] src=' + img.src.substring(img.src.lastIndexOf('/')+1)
-                        + ' natural=' + img.naturalWidth + 'x' + img.naturalHeight
-                        + ' complete=' + img.complete);
                     if (img.naturalWidth <= 0) continue;
-                    // Always block-level: inline images in CSS columns don't create
-                    // a proper layout box and get skipped by the column algorithm.
                     img.style.setProperty('display', 'block', 'important');
-                    // Constrain by both width AND height so portrait images don't
-                    // overflow the viewport vertically in landscape orientation.
                     var scaleW = Math.min(1, cw / img.naturalWidth);
                     var scaleH = Math.min(1, ch / img.naturalHeight);
                     var scale  = Math.min(scaleW, scaleH);
@@ -553,32 +581,48 @@ private fun ReaderContent(
                     img.style.setProperty('max-height', ph + 'px', 'important');
                 }
             }
-            // Expose globally so buildReinitJs can call it after orientation change
             window.__fixImages = fixImages;
-
-            // Run fixImages after layout. Total pages is no longer pre-reported —
-            // hasNextPage() reads scrollWidth fresh on every navigation attempt.
             setTimeout(function() { fixImages(); }, 800);
             window.addEventListener('load', function() { fixImages(); });
+
+            // ── Restore position on initial load ──────────────────────────────
+            // restoreCharOffset >= 0: last action was in-reader → restore by char offset.
+            // restoreCharOffset == -1: last action was notification → go to sentence data-si.
+            var targetCharOffset = $restoreCharOffset;
+            var targetSi         = $restoreCurrentIndex;
+            window.__currentPage = 0;
+
+            function tryRestore() {
+                // Wait until columns are laid out (scrollWidth grows beyond one viewport)
+                if (document.body.scrollWidth <= w + 5 && (targetCharOffset > 0 || targetSi > 0)) {
+                    setTimeout(tryRestore, 300); return;
+                }
+                if (targetCharOffset >= 0) {
+                    window.__restoreByCharOffset(targetCharOffset);
+                } else if (targetSi > 0) {
+                    var el = document.querySelector('[data-si="' + targetSi + '"]');
+                    if (el) {
+                        var page = Math.max(0, Math.floor(el.offsetLeft / w));
+                        goToPage(page);
+                        NotiBook.onScrollToPage(page);
+                    }
+                }
+                // Always report chapter after restore
+                if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
+                // Report charOffset anchor so orientation reinit has something to restore to
+                setTimeout(function(){
+                    var offset = window.__getCharOffset ? window.__getCharOffset(w * 0.5, 60) : 0;
+                    NotiBook.onCharOffset(offset);
+                }, 200);
+            }
+            setTimeout(tryRestore, 600);
         })();
     """.trimIndent()
 
-    val cssRef = rememberUpdatedState(buildCss())
-
-    // rememberUpdatedState ensures the factory lambda (which runs once) always
-    // reads the current callbacks even after recomposition.
-    val onDataSiRef       = rememberUpdatedState(onDataSi)
-    val onReadyRef        = rememberUpdatedState(onReady)
-    val onStartReinitRef  = rememberUpdatedState(onStartReinit)
-    val restoreSiRef      = rememberUpdatedState(restoreSentenceIndex)
-
-    // Builds the JS that re-initializes CSS columns after an orientation change.
-    // - Sets new viewport dimensions on html/body.
-    // - Waits one frame for the browser to reflow columns.
-    // - Finds the element with the saved data-si and jumps to its new page.
-    // - Re-fixes images and reports new total pages.
-    // - Calls NotiBook.onReady() to hide the overlay.
-    fun buildReinitJs(w: Int, h: Int, si: Int) = """
+    // JS injected when orientation changes or the viewport resizes.
+    // Updates column dimensions, waits for the overlay to cover the screen,
+    // then restores position by char offset and hides the overlay.
+    fun buildReinitJs(w: Int, h: Int, charOffset: Long) = """
         (function(){
             var w=$w; var h=$h;
             window.__colW = w;
@@ -592,109 +636,34 @@ private fun ReaderContent(
             b.style.setProperty('height',       h+'px', 'important');
             b.style.setProperty('column-width', w+'px', 'important');
             b.style.setProperty('transition',   'none', 'important');
-            // Transform is NOT reset here. We wait for the overlay to be definitely
-            // visible (250ms >> one Compose frame), then reset to 0 inside setTimeout
-            // so that rects[0].left == layout position (no offset math needed).
+            // Overlay is visible — safe to reset transform so rects[0].left == layout X.
             setTimeout(function(){
-                // Overlay is covering the screen — safe to reset transform temporarily.
                 b.style.transform = 'translateX(0px)';
-
-                var targetPage = 0;
-                var restoreSi = $si;
-
-                if (restoreSi >= 0) {
-                    // Find the block containing restoreSi via data-sentences
-                    var allBlocks = document.querySelectorAll('[data-sentences]');
-                    var targetBlock = null, normOffset = 0, normTotal = 0;
-                    for (var bi = 0; bi < allBlocks.length && !targetBlock; bi++) {
-                        var entries = allBlocks[bi].dataset.sentences.split(',');
-                        var cumLen = 0;
-                        var blockNormTotal = 0;
-                        for (var ei = 0; ei < entries.length; ei++) {
-                            var parts = entries[ei].split(':');
-                            var len = parseInt(parts[1]);
-                            blockNormTotal += len + 1;
-                            if (parseInt(parts[0]) === restoreSi) {
-                                targetBlock = allBlocks[bi];
-                                normOffset = cumLen;   // normalized chars before this sentence
-                                normTotal = blockNormTotal; // total normalized chars in block
-                            }
-                            cumLen += len + 1;
-                        }
-                        if (targetBlock) normTotal = cumLen;
-                    }
-
-                    if (targetBlock) {
-                        try {
-                            // Map normalized char offset → raw char offset proportionally.
-                            // sentenceCharOffset comes from DB (Jsoup-normalized lengths),
-                            // but text nodes have raw lengths. Proportional mapping bridges
-                            // the gap caused by whitespace normalization differences.
-                            var rawLen = targetBlock.textContent.length;
-                            var rawOffset = normTotal > 0
-                                ? Math.round(normOffset * rawLen / normTotal)
-                                : 0;
-                            console.log('reinit: si=' + restoreSi
-                                + ' normOffset=' + normOffset + '/' + normTotal
-                                + ' rawOffset=' + rawOffset + '/' + rawLen
-                                + ' blockStart=' + targetBlock.offsetLeft);
-
-                            // Walk text nodes to find the node containing rawOffset
-                            var walker = document.createTreeWalker(
-                                targetBlock, NodeFilter.SHOW_TEXT, null, false);
-                            var cumRaw = 0, rangeNode = null, rangeOff = 0, tn;
-                            while ((tn = walker.nextNode())) {
-                                var len = tn.textContent.length;
-                                if (cumRaw + len > rawOffset) {
-                                    rangeNode = tn;
-                                    rangeOff = rawOffset - cumRaw;
-                                    break;
-                                }
-                                cumRaw += len;
-                            }
-
-                            if (rangeNode) {
-                                var range = document.createRange();
-                                range.setStart(rangeNode,
-                                    Math.min(rangeOff, rangeNode.textContent.length));
-                                var rects = range.getClientRects();
-                                if (rects && rects.length > 0) {
-                                    // Transform is 0, so rects[0].left == layout X directly
-                                    targetPage = Math.max(0, Math.floor(rects[0].left / w));
-                                    console.log('reinit: rectLeft=' + rects[0].left
-                                        + ' targetPage=' + targetPage);
-                                } else {
-                                    targetPage = Math.floor(targetBlock.offsetLeft / w);
-                                }
-                            } else {
-                                targetPage = Math.floor(targetBlock.offsetLeft / w);
-                            }
-                        } catch(e) {
-                            console.log('reinit error: ' + e);
-                            targetPage = Math.floor(targetBlock.offsetLeft / w);
-                        }
-                    } else {
-                        // Fallback: find block by data-si
-                        var el = document.querySelector('[data-si="'+restoreSi+'"]');
-                        if (el) targetPage = Math.floor(el.offsetLeft / w);
-                    }
+                var targetOffset = $charOffset;
+                if (targetOffset >= 0 && window.__restoreByCharOffset) {
+                    window.__restoreByCharOffset(targetOffset);
+                } else {
+                    NotiBook.onScrollToPage(0);
                 }
-
-                window.__currentPage = targetPage;
-                b.style.transform = 'translateX(-'+(targetPage*w)+'px)';
                 if (window.__fixImages) window.__fixImages();
-                NotiBook.onScrollToPage(targetPage);
                 NotiBook.onReady();
             }, 250);
         })()
     """.trimIndent()
+
+    val cssRef            = rememberUpdatedState(buildCss())
+    val onCharOffsetRef   = rememberUpdatedState(onCharOffset)
+    val onReadyRef        = rememberUpdatedState(onReady)
+    val onStartReinitRef  = rememberUpdatedState(onStartReinit)
+    val restoreCharRef    = rememberUpdatedState(restoreCharOffsetRef)
 
     // Re-inject CSS when font size changes
     LaunchedEffect(fontSize) {
         val escaped = cssRef.value
             .replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
         webViewRef.value?.evaluateJavascript(
-            "(function(){var s=document.getElementById('__nb_css');if(s)s.textContent='$escaped';})()", null
+            "(function(){var s=document.getElementById('__nb_css');if(s)s.textContent='$escaped';})()",
+            null
         )
     }
 
@@ -721,10 +690,8 @@ private fun ReaderContent(
                     builtInZoomControls = false
                     displayZoomControls = false
                     setSupportZoom(false)
-                    useWideViewPort     = false   // never use 980px desktop viewport
-                    loadWithOverviewMode = false  // never scale page to fit
-                    // loadDataWithBaseURL with file:// base can get a null security origin
-                    // on some Android versions; these flags let it load local EPUB images.
+                    useWideViewPort      = false
+                    loadWithOverviewMode = false
                     @Suppress("DEPRECATION")
                     allowFileAccessFromFileURLs = true
                     @Suppress("DEPRECATION")
@@ -732,42 +699,43 @@ private fun ReaderContent(
                 }
 
                 addJavascriptInterface(object {
-                    @JavascriptInterface fun onPrevPage()                  = onPrevPage()
-                    @JavascriptInterface fun onNextPage()                  = onNextPage()
-                    @JavascriptInterface fun onCenterTap()                 = onCenterTap()
-                    @JavascriptInterface fun onChapterVisible(idx: Int)    = onChapterVisible(idx)
-                    @JavascriptInterface fun onScrollToPage(page: Int)     = onScrollToPage(page)
-                    @JavascriptInterface fun onInternalLink(href: String)  = onInternalLink(href)
-                    @JavascriptInterface fun onDataSi(si: Int)             = onDataSiRef.value(si)
-                    @JavascriptInterface fun onReady()                     = onReadyRef.value()
-                    @JavascriptInterface fun debugReport(msg: String)      = Log.d("NotiBook", "JS: $msg")
+                    @JavascriptInterface fun onPrevPage()                 = onPrevPage()
+                    @JavascriptInterface fun onNextPage()                 = onNextPage()
+                    @JavascriptInterface fun onCenterTap()                = onCenterTap()
+                    @JavascriptInterface fun onChapterVisible(idx: Int)   = onChapterVisible(idx)
+                    @JavascriptInterface fun onScrollToPage(page: Int)    = onScrollToPage(page)
+                    @JavascriptInterface fun onInternalLink(href: String) = onInternalLink(href)
+                    @JavascriptInterface fun onCharOffset(offset: Long)   = onCharOffsetRef.value(offset)
+                    @JavascriptInterface fun onReady()                    = onReadyRef.value()
+                    @JavascriptInterface fun debugReport(msg: String)     = Log.d("NotiBook", "JS: $msg")
                 }, "NotiBook")
 
-                // Detect orientation changes: when the WebView width changes significantly
-                // after it has already loaded, trigger a column re-init.
+                // Detect layout changes (orientation, split screen, PiP).
+                // Threshold: any change > 1px triggers a column re-init.
+                // Both width AND height changes are handled (split screen divider drag).
                 addOnLayoutChangeListener { _, left, top, right, bottom,
-                                            oldLeft, _, oldRight, _ ->
-                    val newW = right - left
+                                            oldLeft, oldTop, oldRight, oldBottom ->
+                    val newW = right  - left
                     val newH = bottom - top
-                    val oldW = oldRight - oldLeft
-                    // oldW == 0 means this is the initial layout — skip it.
-                    // Only act when the width changes meaningfully (rotation).
-                    if (oldW > 0 && Math.abs(newW - oldW) > 20 && newW > 0 && newH > 0) {
+                    val oldW = oldRight  - oldLeft
+                    val oldH = oldBottom - oldTop
+                    // oldW == 0 or oldH == 0: initial layout, skip.
+                    val widthChanged  = oldW > 0 && Math.abs(newW - oldW) > 1 && newW > 0 && newH > 0
+                    val heightChanged = oldH > 0 && Math.abs(newH - oldH) > 1 && newW > 0 && newH > 0
+                    if (widthChanged || heightChanged) {
                         val density = context.resources.displayMetrics.density
-                        val wCss = (newW / density).toInt()
-                        val hCss = (newH / density).toInt()
-                        val si   = restoreSiRef.value()   // latest data-si from ViewModel
-                        onStartReinitRef.value()           // show overlay immediately
+                        val wCss    = (newW / density).toInt()
+                        val hCss    = (newH / density).toInt()
+                        val offset  = restoreCharRef.value()  // latest char offset from ViewModel
+                        onStartReinitRef.value()               // show overlay immediately
                         post {
-                            evaluateJavascript(buildReinitJs(wCss, hCss, si), null)
+                            evaluateJavascript(buildReinitJs(wCss, hCss, offset), null)
                         }
                     }
                 }
 
                 webViewClient = object : WebViewClient() {
-                    // Intercept all file:// sub-resource requests (images, CSS, fonts) and
-                    // serve bytes directly — bypasses any WebView security origin checks that
-                    // might silently block file:// images loaded from a file:// page.
+                    // Intercept file:// sub-resource requests so images always load.
                     override fun shouldInterceptRequest(
                         view: WebView,
                         request: android.webkit.WebResourceRequest
@@ -802,13 +770,11 @@ private fun ReaderContent(
                         val css     = cssRef.value
                         val escaped = css.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
 
-                        // Use Android-measured dimensions (always reliable) rather than
-                        // window.innerWidth/Height which can be 0 if layout hasn't happened yet.
                         val density = view.context.resources.displayMetrics.density
                         val wCss = (view.width  / density).toInt()
                         val hCss = (view.height / density).toInt()
 
-                        // If the view hasn't been measured yet, defer until it is.
+                        // If the view isn't measured yet, defer until it is.
                         if (wCss <= 0 || hCss <= 0) {
                             view.post { onPageFinished(view, url) }
                             return
@@ -818,14 +784,11 @@ private fun ReaderContent(
                             (function(){
                                 var s=document.getElementById('__nb_css');
                                 if(s) s.textContent='$escaped';
-                                // Dimensions from Android layout — guaranteed correct
                                 var w=$wCss; var h=$hCss;
                                 var de=document.documentElement;
                                 de.style.setProperty('width',     w+'px',    'important');
                                 de.style.setProperty('height',    h+'px',    'important');
                                 de.style.setProperty('overflow',  'hidden',  'important');
-                                // clip-path clips rendered output at element bounds —
-                                // unlike overflow:hidden on root, it is NOT propagated to viewport
                                 de.style.setProperty('clip-path', 'inset(0)', 'important');
                                 var b=document.body;
                                 b.style.setProperty('margin',       '0',       'important');
@@ -848,9 +811,8 @@ private fun ReaderContent(
         update = { wv ->
             if (!isLoaded) {
                 isLoaded = true
-                // EPUB books: combinedHtml is written to a real file and baseUrl is that
-                // file's file:// URL — gives a genuine origin so images load correctly.
-                // TXT books: combinedHtml is non-empty and loaded via loadDataWithBaseURL.
+                // EPUB: combinedHtml is empty, load from file:// URL (real origin for images).
+                // TXT: combinedHtml is non-empty, load via loadDataWithBaseURL.
                 if (combinedHtml.isEmpty()) {
                     wv.loadUrl(baseUrl)
                 } else {
@@ -859,7 +821,7 @@ private fun ReaderContent(
             }
         },
         modifier = Modifier
-            .padding(top = 60.dp, start = 20.dp, end = 20.dp, bottom = 16.dp)
+            .padding(top = 92.dp, start = 20.dp, end = 20.dp, bottom = 16.dp)
             .fillMaxSize()
     )
 }

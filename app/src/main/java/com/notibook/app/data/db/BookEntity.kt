@@ -23,8 +23,10 @@ data class BookEntity(
     val notificationActive: Boolean = false,
 
     // ── In-app reader position ───────────────────────────────────────────────
-    /** Saved page index in the CSS-columns reader (repurposed from spine index). */
-    val readerSpineIndex: Int = 0,
-    /** True if the notification was active when the reader was opened (so we can restore it on close). */
-    val notifWasActiveBeforeReader: Boolean = false
+    /**
+     * Character offset into the normalized book text at the last reader close position.
+     * -1 means "use the notification's currentIndex position instead" — set when the
+     * user last navigated via notification arrows rather than the in-app reader.
+     */
+    val readerCharOffset: Long = -1L
 )

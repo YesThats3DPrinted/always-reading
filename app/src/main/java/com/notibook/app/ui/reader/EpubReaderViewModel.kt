@@ -1,7 +1,6 @@
 package com.notibook.app.ui.reader
 
 import android.app.Application
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.notibook.app.NotiBookApp
@@ -16,9 +15,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface ReaderState {
     data object Loading : ReaderState
@@ -28,7 +31,10 @@ sealed interface ReaderState {
         val spineItems: List<SpineItem>,
         val combinedHtml: String,
         val baseUrl: String,
-        val restorePageIndex: Int
+        /** Character offset to restore to. -1 means use restoreCurrentIndex instead. */
+        val restoreCharOffset: Long,
+        /** Sentence index to navigate to when restoreCharOffset == -1. */
+        val restoreCurrentIndex: Int
     ) : ReaderState
 }
 
@@ -41,11 +47,12 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _state = MutableStateFlow<ReaderState>(ReaderState.Loading)
     val state: StateFlow<ReaderState> = _state.asStateFlow()
 
-    // Current page index — drives LaunchedEffect in Screen → window.scrollTo / translateX
+    // Current page index — drives LaunchedEffect in Screen → translateX animation
     private val _currentPageIndex = MutableStateFlow(0)
     val currentPageIndex: StateFlow<Int> = _currentPageIndex.asStateFlow()
 
     private val _currentChapterTitle = MutableStateFlow("")
+    val currentChapterTitle: StateFlow<String> = _currentChapterTitle.asStateFlow()
 
     private val _scrollToChapterCommand = MutableStateFlow<Int?>(null)
     val scrollToChapterCommand: StateFlow<Int?> = _scrollToChapterCommand.asStateFlow()
@@ -53,16 +60,26 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _topBarVisible = MutableStateFlow(true)
     val topBarVisible: StateFlow<Boolean> = _topBarVisible.asStateFlow()
 
-    // Tracks the data-si of the element at the top of the current page.
-    // Used to restore position after orientation change (page index is meaningless
-    // across different column widths, but data-si is a text-level anchor).
-    private val _restoreSentenceIndex = MutableStateFlow(-1)
-    val restoreSentenceIndex: Int get() = _restoreSentenceIndex.value
-
     // True while the WebView is re-initializing columns after a screen resize.
-    // An opaque overlay is shown to hide the reflow animation.
     private val _isReiniting = MutableStateFlow(false)
     val isReiniting: StateFlow<Boolean> = _isReiniting.asStateFlow()
+
+    // Character offset anchor for orientation restore.
+    // Updated by JS after each page turn via onCharOffset().
+    private val _restoreCharOffset = MutableStateFlow(-1L)
+    val restoreCharOffset: Long get() = _restoreCharOffset.value
+
+    // Freeze the char offset anchor during re-init so the LaunchedEffect's
+    // post-animation onCharOffset call doesn't overwrite the saved position.
+    private val skipNextCharOffsetUpdate = AtomicBoolean(false)
+
+    // When JS calls onScrollToPage (e.g. tryRestore, chapter jump), skip the
+    // LaunchedEffect animation since JS has already set the position directly.
+    private val skipNextPageAnimation = AtomicBoolean(false)
+
+    // Whether the notification is currently active — observed from DB
+    private val _notificationActive = MutableStateFlow(false)
+    val notificationActive: StateFlow<Boolean> = _notificationActive.asStateFlow()
 
     val readerPreferences: ReaderPreferences get() = prefs
 
@@ -74,6 +91,12 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         if (this.bookId == bookId) return
         this.bookId = bookId
         viewModelScope.launch { loadReader(bookId) }
+        // Observe notification active state from DB
+        viewModelScope.launch {
+            repo.getBookFlow(bookId).collect { book ->
+                _notificationActive.value = book?.notificationActive ?: false
+            }
+        }
     }
 
     private suspend fun loadReader(bookId: Long) {
@@ -81,9 +104,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         try {
             val book = repo.getBook(bookId) ?: run {
                 _state.value = ReaderState.Error("Book not found."); return
-            }
-            if (book.isParsing) {
-                _state.value = ReaderState.Error("This book is still being processed. Please wait."); return
             }
             if (book.filePath.endsWith(".txt", ignoreCase = true)) loadTxtReader(book)
             else loadEpubReader(bookId, book)
@@ -100,7 +120,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             _state.value = ReaderState.Error("Could not read book chapters."); return
         }
 
-        // Fetch sentences per spine item so EpubCombiner can annotate data-si attributes
         val sentencesBySpineIndex: Map<Int, List<SentenceEntity>> = withContext(Dispatchers.IO) {
             spineItems.indices.associate { idx ->
                 idx to repo.getSentencesForSpineItem(bookId, idx)
@@ -109,24 +128,19 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
         val combinedHtml = EpubCombiner.buildCombinedHtml(spineItems, sentencesBySpineIndex, prefs.fontSize)
 
-        // Write the combined HTML to a real file so WebView loads it via file:// URL.
-        // loadDataWithBaseURL with a file:// base can get a null security origin on
-        // Android 10+, silently blocking all file:// image/CSS resource loads.
-        // Loading from an actual file gives the page a genuine file:// origin.
         val htmlFile = withContext(Dispatchers.IO) {
             File(cacheDir.canonicalFile, "__reader.html").also { it.writeText(combinedHtml) }
         }
 
-        val restorePage  = book.readerSpineIndex
-        _currentPageIndex.value = restorePage
+        _currentPageIndex.value = 0
         _state.value = ReaderState.Ready(
-            bookTitle        = book.title,
-            spineItems       = spineItems,
-            combinedHtml     = "",                               // unused — loading from file
-            baseUrl          = "file://${htmlFile.canonicalPath}",
-            restorePageIndex = restorePage
+            bookTitle           = book.title,
+            spineItems          = spineItems,
+            combinedHtml        = "",
+            baseUrl             = "file://${htmlFile.canonicalPath}",
+            restoreCharOffset   = book.readerCharOffset,
+            restoreCurrentIndex = book.currentIndex
         )
-        onReaderOpened(book.notificationActive)
     }
 
     private suspend fun loadTxtReader(book: com.notibook.app.data.db.BookEntity) {
@@ -134,32 +148,25 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         if (!file.exists()) { _state.value = ReaderState.Error("File not found."); return }
         val content = withContext(Dispatchers.IO) { file.readText() }
 
-        // Fetch sentences to annotate paragraphs with data-si
         val sentences = withContext(Dispatchers.IO) {
-            repo.getSentencesForSpineItem(book.id, 0)  // all TXT sentences have spineItemIndex=0
+            repo.getSentencesForSpineItem(book.id, 0)
         }
 
-        val restorePage = book.readerSpineIndex
-        _currentPageIndex.value = restorePage
+        _currentPageIndex.value = 0
         _state.value = ReaderState.Ready(
-            bookTitle        = book.title,
-            spineItems       = emptyList(),
-            combinedHtml     = buildTxtHtml(content, sentences),
-            baseUrl          = "about:blank",
-            restorePageIndex = restorePage
+            bookTitle           = book.title,
+            spineItems          = emptyList(),
+            combinedHtml        = buildTxtHtml(content, sentences),
+            baseUrl             = "about:blank",
+            restoreCharOffset   = book.readerCharOffset,
+            restoreCurrentIndex = book.currentIndex
         )
-        onReaderOpened(book.notificationActive)
     }
 
     private fun buildTxtHtml(content: String, sentences: List<SentenceEntity>): String {
-        // Build blockIndex → sentence list mapping (mirrors EpubCombiner logic)
         val blockToFirstSi: Map<Int, Int> = sentences
             .groupBy { it.blockIndex }
             .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
-        val blockToSentences: Map<Int, List<com.notibook.app.data.db.SentenceEntity>> = sentences
-            .filter { it.type != "DIVIDER" }
-            .groupBy { it.blockIndex }
-            .mapValues { (_, s) -> s.sortedBy { it.sentenceIndex } }
 
         val fontSize = prefs.fontSize
         val initialCss = """
@@ -182,12 +189,8 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             append("</head><body>")
             paragraphs.forEachIndexed { idx, para ->
                 val si = blockToFirstSi[idx]
-                val blockSentences = blockToSentences[idx]
                 val siAttr = if (si != null) " data-si=\"$si\"" else ""
-                val sentAttr = if (!blockSentences.isNullOrEmpty())
-                    " data-sentences=\"${blockSentences.joinToString(",") { "${it.sentenceIndex}:${it.text.trim().length}" }}\""
-                else ""
-                append("<p$siAttr$sentAttr>")
+                append("<p$siAttr>")
                 append(
                     para.trim()
                         .replace("&", "&amp;")
@@ -202,65 +205,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // ── Notification lifecycle ────────────────────────────────────────────────
-
-    private suspend fun onReaderOpened(notificationWasActive: Boolean) {
-        repo.updateNotifWasActive(bookId, notificationWasActive)
-        if (notificationWasActive) NotificationHelper.hide(getApplication(), bookId)
-    }
-
-    /**
-     * Called from the Screen on any close path.
-     *
-     * [sentenceIndex] comes from JS via data-si attribute on the element at the
-     * top of the current page — exact, no approximation, no text matching.
-     * The current page index is read from [_currentPageIndex] which the ViewModel
-     * always tracks precisely.
-     */
-    fun closeWithPosition(sentenceIndex: Int, startNotification: Boolean) {
-        val capturedBookId       = bookId
-        val capturedChapterTitle = _currentChapterTitle.value
-        val capturedPageIndex    = _currentPageIndex.value
-        val ctx = getApplication<Application>()
-
-        Log.d("NotiBook", "close: page=$capturedPageIndex sentenceIndex=$sentenceIndex")
-
-        app.appScope.launch {
-            val book = repo.getBook(capturedBookId) ?: return@launch
-
-            // Save page index so reader can restore next time it opens
-            repo.updateReaderPosition(capturedBookId, capturedPageIndex)
-
-            // Find the first non-DIVIDER sentence at or after sentenceIndex
-            var actualSentenceIdx = sentenceIndex.coerceIn(0, (book.totalSentences - 1).coerceAtLeast(0))
-            val targetSentence = repo.getSentence(capturedBookId, actualSentenceIdx)
-            if (targetSentence?.type == ParsedSentence.TYPE_DIVIDER) {
-                // Advance to next non-DIVIDER
-                var next = actualSentenceIdx + 1
-                while (next < book.totalSentences) {
-                    val s = repo.getSentence(capturedBookId, next)
-                    if (s != null && s.type != ParsedSentence.TYPE_DIVIDER) {
-                        actualSentenceIdx = next; break
-                    }
-                    next++
-                }
-            }
-
-            repo.updatePosition(capturedBookId, actualSentenceIdx, capturedChapterTitle)
-
-            val shouldShow = startNotification || book.notifWasActiveBeforeReader
-            if (shouldShow) {
-                val updatedBook = repo.getBook(capturedBookId) ?: return@launch
-                val sentence    = repo.getSentence(capturedBookId, actualSentenceIdx)
-                if (sentence != null) {
-                    repo.updateNotificationActive(capturedBookId, true)
-                    NotificationHelper.show(ctx, updatedBook, sentence)
-                }
-            }
-            repo.updateNotifWasActive(capturedBookId, false)
-        }
-    }
-
     // ── JS bridge callbacks ───────────────────────────────────────────────────
 
     fun onPrevPage() {
@@ -269,9 +213,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun onNextPage() {
-        // No clamping here — JS guards against going past the last page via hasNextPage()
-        // which reads scrollWidth fresh every time, so it's always accurate even for
-        // large books where the browser computes columns lazily.
+        // No clamping — JS guards against going past the last page via sentinelVisible()
         _currentPageIndex.value = _currentPageIndex.value + 1
         _topBarVisible.value = false
     }
@@ -285,9 +227,83 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         _currentChapterTitle.value = items.getOrNull(chapterIndex)?.chapterTitle ?: ""
     }
 
-    /** Called from JS when navigating to a specific page (chapter jump or internal link). */
+    /**
+     * Called from JS when navigating to a specific page (tryRestore, chapter jump, internal link).
+     * Sets skipNextPageAnimation so LaunchedEffect doesn't re-animate — JS already positioned.
+     */
     fun onScrollToPage(page: Int) {
+        skipNextPageAnimation.set(true)
         _currentPageIndex.value = page.coerceAtLeast(0)
+    }
+
+    /**
+     * Called from JS bridge after each page turn with the character offset at the top of screen.
+     * Skipped once after re-init so orientation change never drifts the anchor.
+     */
+    fun onCharOffset(offset: Long) {
+        if (skipNextCharOffsetUpdate.getAndSet(false)) return
+        if (offset >= 0) _restoreCharOffset.value = offset
+    }
+
+    /**
+     * Called from JS when the reader is closed.
+     * [sentenceIndex] is used to update the notification position.
+     * [charOffset] is saved so the reader can reopen at the same place.
+     */
+    fun onClose(sentenceIndex: Int, charOffset: Long, startNotification: Boolean) {
+        val capturedBookId       = bookId
+        val capturedChapterTitle = _currentChapterTitle.value
+        val ctx = getApplication<Application>()
+
+        app.appScope.launch {
+            val book = repo.getBook(capturedBookId) ?: return@launch
+
+            // Save character offset for next reader open
+            repo.updateReaderCharOffset(capturedBookId, charOffset)
+
+            // Find the first non-DIVIDER sentence at or after sentenceIndex
+            var actualSentenceIdx = sentenceIndex.coerceIn(0, (book.totalSentences - 1).coerceAtLeast(0))
+            val targetSentence = repo.getSentence(capturedBookId, actualSentenceIdx)
+            if (targetSentence?.type == ParsedSentence.TYPE_DIVIDER) {
+                var next = actualSentenceIdx + 1
+                while (next < book.totalSentences) {
+                    val s = repo.getSentence(capturedBookId, next)
+                    if (s != null && s.type != ParsedSentence.TYPE_DIVIDER) {
+                        actualSentenceIdx = next; break
+                    }
+                    next++
+                }
+            }
+
+            repo.updatePosition(capturedBookId, actualSentenceIdx, capturedChapterTitle)
+
+            if (startNotification || book.notificationActive) {
+                val updatedBook = repo.getBook(capturedBookId) ?: return@launch
+                val sentence    = repo.getSentence(capturedBookId, actualSentenceIdx)
+                if (sentence != null) {
+                    repo.updateNotificationActive(capturedBookId, true)
+                    NotificationHelper.show(ctx, updatedBook, sentence)
+                }
+            }
+        }
+    }
+
+    // ── Notification toggle ───────────────────────────────────────────────────
+
+    fun toggleNotification(enabled: Boolean) {
+        val capturedBookId = bookId
+        val ctx = getApplication<Application>()
+        app.appScope.launch {
+            val book = repo.getBook(capturedBookId) ?: return@launch
+            if (enabled) {
+                val sentence = repo.getSentence(capturedBookId, book.currentIndex) ?: return@launch
+                repo.updateNotificationActive(capturedBookId, true)
+                NotificationHelper.show(ctx, book, sentence)
+            } else {
+                repo.updateNotificationActive(capturedBookId, false)
+                NotificationHelper.hide(ctx, capturedBookId)
+            }
+        }
     }
 
     // ── Chapter jump ──────────────────────────────────────────────────────────
@@ -302,11 +318,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── Internal link handler ─────────────────────────────────────────────────
 
-    /**
-     * Navigates to an internal EPUB link (file:// URL with optional #fragment).
-     * With CSS columns, navigation is by page (column) index via onScrollToPage().
-     * JS finds the target element's column index using offsetLeft / innerWidth.
-     */
     fun handleInternalLink(resolvedHref: String, webView: android.webkit.WebView?) {
         webView ?: return
         val uri      = android.net.Uri.parse(resolvedHref)
@@ -349,27 +360,16 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
 
     // ── Orientation re-init ───────────────────────────────────────────────────
 
-    // Set to true by startReinit() so the first onDataSi() call after a re-init
-    // (which comes from the LaunchedEffect page animation, not from user navigation)
-    // is ignored. This keeps the anchor stable across orientation changes — the
-    // canonical position only moves when the user actively navigates.
-    private val skipNextDataSiUpdate = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    /** Called from JS bridge: records the data-si at the top of the current page.
-     *  Skipped once after a re-init so orientation change never drifts the anchor. */
-    fun onDataSi(si: Int) {
-        if (skipNextDataSiUpdate.getAndSet(false)) return
-        if (si >= 0) _restoreSentenceIndex.value = si
-    }
-
     /** Called from JS bridge: columns fully re-laid-out after resize, hide overlay. */
     fun onReady() { _isReiniting.value = false }
 
-    /** Called from Kotlin when screen width changes: show overlay before re-init JS fires. */
+    /** Called from Kotlin when screen dimensions change: show overlay before re-init JS fires. */
     fun startReinit() {
         _isReiniting.value = true
-        skipNextDataSiUpdate.set(true)  // freeze anchor for this re-init cycle
+        skipNextCharOffsetUpdate.set(true)  // freeze anchor for this re-init cycle
     }
+
+    fun isSkippingPageAnimation(): Boolean = skipNextPageAnimation.getAndSet(false)
 
     // ── Settings ──────────────────────────────────────────────────────────────
 

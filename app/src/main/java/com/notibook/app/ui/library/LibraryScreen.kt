@@ -103,7 +103,8 @@ fun LibraryScreen(
                         isSelected      = isSelected,
                         onClick = {
                             if (isSelectionMode) vm.toggleSelection(book.id)
-                            else onBookClick(book.id)
+                            else if (!book.isParsing) onBookClick(book.id)
+                            // tap is silently ignored while isParsing — the progress bar is visible
                         },
                         onLongClick = { vm.toggleSelection(book.id) }
                     )

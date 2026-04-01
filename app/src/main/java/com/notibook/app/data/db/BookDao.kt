@@ -42,9 +42,14 @@ interface BookDao {
     @Query("DELETE FROM books WHERE id = :bookId")
     suspend fun deleteById(bookId: Long)
 
-    @Query("UPDATE books SET readerSpineIndex = :spineIndex WHERE id = :bookId")
-    suspend fun updateReaderPosition(bookId: Long, spineIndex: Int)
+    /** Save character offset when user closes the reader. */
+    @Query("UPDATE books SET readerCharOffset = :charOffset WHERE id = :bookId")
+    suspend fun updateReaderCharOffset(bookId: Long, charOffset: Long)
 
-    @Query("UPDATE books SET notifWasActiveBeforeReader = :was WHERE id = :bookId")
-    suspend fun updateNotifWasActive(bookId: Long, was: Boolean)
+    /**
+     * Clear the reader position so the next open uses the notification's currentIndex.
+     * Called by NotificationActionReceiver after each sentence advance.
+     */
+    @Query("UPDATE books SET readerCharOffset = -1 WHERE id = :bookId")
+    suspend fun clearReaderCharOffset(bookId: Long)
 }

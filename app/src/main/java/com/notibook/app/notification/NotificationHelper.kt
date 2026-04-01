@@ -6,9 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
+import android.os.Build
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.notibook.app.MainActivity
 import com.notibook.app.NotiBookApp
 import com.notibook.app.R
@@ -29,14 +31,24 @@ object NotificationHelper {
 
     fun show(context: Context, book: BookEntity, sentence: SentenceEntity) {
         if (book.isParsing) return
+        val notifId = notificationId(book.id)
         val notification = buildNotification(context, book, sentence)
         try {
-            NotificationManagerCompat.from(context).notify(notificationId(book.id), notification)
+            // Start the foreground service first, then attach the notification to it.
+            // This makes the notification non-swipeable (ongoing) and keeps it visible
+            // even under memory pressure.
+            val serviceIntent = Intent(context, ReadingNotificationService::class.java)
+            ContextCompat.startForegroundService(context, serviceIntent)
+            NotificationManagerCompat.from(context).notify(notifId, notification)
         } catch (_: SecurityException) { }
     }
 
     fun hide(context: Context, bookId: Long) {
         NotificationManagerCompat.from(context).cancel(notificationId(bookId))
+        // Stop the foreground service when no notifications are active.
+        // The caller (ViewModel / NotificationActionReceiver) is responsible for
+        // only calling hide() when this is the last active book.
+        context.stopService(Intent(context, ReadingNotificationService::class.java))
     }
 
     // ── Notification builder ─────────────────────────────────────────────────
@@ -67,8 +79,7 @@ object NotificationHelper {
             .setSmallIcon(R.drawable.ic_book)
             .setContentText(displayText)
             .setCustomBigContentView(expanded)
-            .setDeleteIntent(makeBroadcast(context, NotificationActionReceiver.ACTION_DISMISS, book.id))
-            .setOngoing(false)
+            .setOngoing(true)
             .setAutoCancel(false)
             .setShowWhen(false)
             .build()

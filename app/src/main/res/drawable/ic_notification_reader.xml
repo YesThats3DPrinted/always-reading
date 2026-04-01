@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Notification reader icon: a rounded rectangle (notification silhouette) containing
+    a left chevron (‹), two text lines in the centre, and a right chevron (›).
+    Tinted by Compose — use full alpha for "on" state, reduced alpha for "off" state.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Rounded rectangle outline (the notification card shape) -->
+    <path
+        android:pathData="M4,3 L20,3 A2,2 0 0 1 22,5 L22,19 A2,2 0 0 1 20,21 L4,21 A2,2 0 0 1 2,19 L2,5 A2,2 0 0 1 4,3 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5" />
+
+    <!-- Left chevron (‹) -->
+    <path
+        android:pathData="M8.5,9.5 L6,12 L8.5,14.5"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <!-- Centre: two horizontal lines representing text -->
+    <path
+        android:pathData="M10.5,10.5 L13.5,10.5"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M10.5,13.5 L13.5,13.5"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round" />
+
+    <!-- Right chevron (›) -->
+    <path
+        android:pathData="M15.5,9.5 L18,12 L15.5,14.5"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+</vector>
