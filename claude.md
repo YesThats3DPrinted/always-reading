@@ -1,438 +1,287 @@
 # NotiBook — Android Ebook Reader via Persistent Notifications
 
-## Project Overview
+## What This App Does
 
-**NotiBook** is an Android ebook reader application that displays books one sentence at a time in persistent notifications. Users can navigate through sentences using arrow buttons (← →) in the notification, and tap the title to open the full in-app reader. This unique interface makes reading ambient and asynchronous — you can read while doing other tasks.
+NotiBook lets you read books passively throughout your day. Instead of sitting down and opening a reading app, you get one sentence at a time delivered as a persistent notification. You can tap the arrows in the notification to go forward or back, and tap the title to open the full in-app reader whenever you want to read more actively.
 
 **Supported formats:** EPUB, TXT
 **Target devices:** Android 7+ (API 24+)
-**Notification behavior:** Custom RemoteViews (expanded view only), no foreground service
 
 ---
 
-## Architecture
+## High-Level Architecture
 
-### Core Layers
+The app has four main concerns:
 
-1. **Notification System** (`notification/`)
-   - `NotificationHelper.kt` — builds and posts notifications via `NotificationManagerCompat.notify()`; `makeOpenAppIntent` passes `bookId` extra, uses `bookId.toInt()` as requestCode for unique PendingIntents
-   - `NotificationActionReceiver.kt` — handles navigation (← →), dismiss, snooze via BroadcastReceiver with `goAsync()` + coroutines
-   - `BootReceiver.kt` — restores active notifications on device boot
-   - `SnoozeAlarmReceiver.kt` — fires snooze alarms set by user
-   - `NotificationService.kt` — empty stub (foreground service removed entirely)
-
-2. **Book Parsing** (`parsing/`)
-   - `EpubParser.kt` — extracts text from EPUB files, respects `<p>` paragraph boundaries
-   - `TxtParser.kt` — reads TXT files, splits on `\n{2,}` for paragraphs
-   - `SentenceSplitter.kt` — ICU BreakIterator + abbreviation/number merging + equal-chunk splitting
-   - `ParseWorker.kt` — WorkManager task for async parsing without blocking UI
-
-3. **EPUB Reader** (`epub/`)
-   - `EpubExtractor.kt` — unzips EPUB to app cache dir; uses `File.canonicalPath` (not `absolutePath`) to avoid symlink mismatch between `/data/user/0/` and `/data/data/`
-   - `EpubSpineReader.kt` — reads spine order from `content.opf`; uses `canonicalPath`
-   - `EpubCombiner.kt` — merges all spine chapters into one HTML document, absolutizes `src` and `href` attrs; injects sentence-level `data-si` sentinel spans
-   - `SpineItem.kt` — data class: `(chapterTitle, htmlFile, canonicalPath)`
-
-4. **In-App Reader** (`ui/reader/`)
-   - `EpubReaderScreen.kt` — WebView-based reader; CSS columns pagination; tap/swipe navigation; JS bridge; orientation-change overlay + re-init
-   - `EpubReaderViewModel.kt` — manages reader state; `currentPageIndex`, `totalPages`, `topBarVisible`; `restoreSentenceIndex` for orientation restore; `closeWithPosition` saves exact sentence via `caretRangeFromPoint`
-   - `ReaderPreferences.kt` — SharedPreferences wrapper; stores `fontSize` (12–28, step 2)
-
-5. **Database** (`data/db/`)
-   - Room ORM with `BookEntity` and `SentenceEntity`
-   - `BookDao.kt`, `SentenceDao.kt` for queries
-   - Current schema version: **2**
-   - **Planned schema version 3:** add `type` field to `SentenceEntity` (`SENTENCE`, `IMAGE`, `TABLE`, `DIVIDER`); remove `readerScrollPercent` from `BookEntity`
-
-6. **UI** (`ui/`)
-   - `LibraryScreen.kt` — `onBookClick: (bookId: Long)` (no `isEpub` param; all books use same reader)
-   - `AppNavigation.kt` — all books route to `reader/{bookId}`; observes `pendingOpenBookId` for notification-tap navigation while app is open
-   - `BookDetailScreen.kt` — displays current sentence, notification toggle, restart/remove
-   - `BookDetailViewModel.kt` — manages UI state, calls notification system directly
-
-7. **App Initialization** (`NotiBookApp.kt`)
-   - Creates notification channel: `IMPORTANCE_DEFAULT`, no sound/vibration
-   - `restoreActiveNotifications()` called at app startup
-   - `appScope: CoroutineScope` — public, survives ViewModel lifecycle (use for saves that must complete after nav pop)
-   - `pendingOpenBookId: MutableStateFlow<Long>` — for notification-tap navigation while app is open
-
-8. **`MainActivity.kt`**
-   - Reads `bookId` from intent extras (set by notification tap)
-   - Passes `startBookId` to `AppNavigation`
-   - Handles `onNewIntent` for notification tap while app is already open
-
-### Data Flow
-
-```
-Import Book (user clicks "Import")
-→ ParseWorker parses file (EPUB/TXT)
-→ SentenceSplitter breaks into sentences + merges abbreviations + equal chunks
-→ (EPUB) EpubParser annotates HTML with data-si attributes, saves annotated files  [PLANNED]
-→ Room DB stores all sentences (with type: SENTENCE/IMAGE/TABLE/DIVIDER)           [PLANNED]
-→ NotificationHelper.show() posts first sentence notification
-↓
-User taps ← or →
-→ BroadcastReceiver updates DB position
-→ NotificationHelper.show() updates notification with new sentence
-↓
-User taps notification title
-→ MainActivity opens with bookId extra
-→ AppNavigation routes to reader/{bookId}
-→ EpubReaderViewModel.init(bookId) loads book, combines HTML, restores page
-↓
-User closes reader ("Close" or "Close & start notification")
-→ webView.scrollY / webView.height = exact pageIndex (Kotlin, always reliable)
-→ JS elementFromPoint(cx, cy) → data-si attribute = exact sentenceIndex            [PLANNED]
-→ vm.closeWithPosition(pageIndex, totalPages, sentenceIndex, startNotification)
-→ Book position saved to DB
-```
+1. **Parsing** — when you import a book, it gets split into individual sentences and stored in a database
+2. **Notifications** — sentences are shown one at a time in a persistent notification with ← → navigation
+3. **Reader** — a full in-app WebView reader for when you want to read continuously
+4. **Sync** — when you close the reader, your position is saved and the notification picks up exactly where you left off
 
 ---
 
-## Key Technical Decisions & Constraints
+## File-by-File Breakdown
 
-### 1. No Foreground Service
+### Notifications (`notification/`)
 
-**Decision:** Removed the foreground service entirely. Notifications now posted via `NotificationManagerCompat.notify()` directly.
+**`NotificationHelper.kt`**
+The one place responsible for building and showing notifications. It reads the current sentence from the DB and constructs a custom notification layout. Each book gets its own notification ID (using `bookId.toInt()`) so multiple books can have active notifications simultaneously. Checks dark/light mode at build time and sets text colors accordingly, since custom notification layouts don't get automatic theming.
 
-**Why:** On MIUI, foreground service notifications are force-expanded and cannot be swiped away. Removing the service allows:
-- Swipe-to-dismiss to work
-- Both collapsed and expanded states to be visible
-- Dismissal without force-killing the app
+**`NotificationActionReceiver.kt`**
+Listens for button taps inside the notification (← →, dismiss, snooze). Uses `goAsync()` so it can do database work without timing out — Android gives BroadcastReceivers very little time by default. Updates the sentence index in the DB, then rebuilds and posts the notification with the new sentence.
 
-**Trade-off:** Without a foreground service, the system can kill notifications under memory pressure. Acceptable — user can re-enable via the app.
+**`BootReceiver.kt`**
+When the phone restarts, Android kills all notifications. This receiver fires on boot and re-posts any notifications that were active when the phone was shut down.
 
-**Implementation:** All notification posting goes through `NotificationHelper.show()`. BroadcastReceivers use `goAsync()` + coroutines for async DB work.
+**`SnoozeAlarmReceiver.kt`**
+Handles the snooze feature — when a snooze alarm fires, re-posts the notification.
 
----
-
-### 2. RemoteViews Whitelist & Custom Layouts
-
-**Constraint:** Android's notification RemoteViews only support a whitelist of view classes:
-- ✅ Allowed: `FrameLayout`, `LinearLayout`, `RelativeLayout`, `GridLayout`, `TextView`, `ImageView`, `ImageButton`, `Button`, `ProgressBar`, `Chronometer`, `ListView`, `GridView`, `StackView`, `ViewFlipper`, `ViewStub`
-- ❌ Not allowed: `ScrollView`, `RecyclerView`, `WebView`, `VideoView`, custom views, etc.
-
-**Implication:** No scrolling in notifications. Long sentences are capped at `maxLines=8` + `ellipsize=end`. The equal-chunk algorithm keeps most segments short enough to avoid this.
-
-**Layout:**
-- `notification_expanded.xml` — title row (← title →) with rounded grey button backgrounds, sentence text below (maxLines=8)
-- No custom collapsed layout — Android's standard template handles the collapsed state with correct theming
+**`NotificationService.kt`**
+Empty stub. We removed the foreground service entirely because on MIUI phones, foreground service notifications can't be swiped away and behave strangely. Notifications are posted directly via `NotificationManagerCompat.notify()` instead.
 
 ---
 
-### 3. Notification Background Color & Dark Mode
+### Book Parsing (`parsing/`)
 
-**Current approach — Dark mode detection:**
-- `NotificationHelper` checks `Configuration.UI_MODE_NIGHT_MASK` at notification build time
-- Sets white text in dark mode, black text in light mode via `setInt("setTextColor", color)`
-- Collapsed state uses Android's standard template (no custom view) — system handles its own theming correctly
-- Expanded state uses custom view with runtime-detected colors
+When you import a book, a background WorkManager job runs the full parsing pipeline.
 
-**Key insight:** Custom RemoteViews must set text colors explicitly. Standard template notifications handle theming automatically.
+**`EpubParser.kt`**
+Reads the EPUB file and extracts text from each chapter in spine order. Respects paragraph boundaries.
 
----
+**`TxtParser.kt`**
+Reads a plain text file and splits it into paragraphs on double newlines (`\n\n`).
 
-### 4. Single Notification Layout (Expanded Only)
+**`SentenceSplitter.kt`**
+Takes paragraphs and breaks them into individual sentences using Android's ICU `BreakIterator`. Then does two passes of cleanup:
+- **Merge false boundaries** — if a sentence ends with `Mr.` or `1.` or `III.` etc., it gets merged with the next one because ICU wrongly treated the period as a sentence end
+- **Split long sentences** — anything over 250 characters gets split into equal-sized chunks so no notification text is absurdly long. Non-last chunks get a trailing `" …"`.
 
-**Decision:** Only one custom layout — the expanded view (`notification_expanded.xml`).
-
-**Why:** The collapsed state is handled by Android's standard template which automatically handles light/dark mode and works correctly on all OEMs.
-
-**Notification title format:** `"0% · Book Title · Chapter"` — percentage first so it's always visible even on long titles that would otherwise be truncated.
+**`ParseWorker.kt`**
+The WorkManager task that ties it all together: calls the parser, calls the splitter, writes every sentence to the database with its index, spine item, and block position.
 
 ---
 
-### 5. Sentence Splitting Design Philosophy
+### EPUB Processing (`epub/`)
 
-**Core principle: always err on the side of merging, never on splitting.**
+These files handle turning a raw `.epub` file into something the reader can display.
 
-#### Pipeline
+**`EpubExtractor.kt`**
+An EPUB is just a ZIP file. This unzips it into `cache/epub_<bookId>/` preserving the original directory structure, so all the relative paths inside the HTML files (images, CSS, fonts) still resolve correctly. Uses `canonicalPath` everywhere — important because Android has a symlink situation where `/data/user/0/` and `/data/data/` point to the same place but are different strings. Always use canonical to avoid mismatches.
 
-```
-Raw text
-  ↓ ICU BreakIterator (sentence boundaries)
-  ↓ Abbreviation/number/Roman numeral merging
-  ↓ Equal-chunk splitting (MAX_CHUNK_CHARS = 250)
-Final segments stored in DB
-```
+**`EpubSpineReader.kt`**
+Reads `content.opf` inside the extracted EPUB to find the spine — the ordered list of HTML files that make up the book. Returns a list of `SpineItem` objects.
 
-#### Step 2 — False boundary merging
-Consecutive segments merged when the first ends with:
-- **Known abbreviations:** `Mr.` `Dr.` `etc.` `e.g.` `Jan.` `Ave.` `Inc.` and ~80 others
-  - Categories: titles/honorifics, academic degrees, Latin, publishing, time, geography, business/legal, era (B.C./A.D.), units (km/kg/oz...), compass directions, professional terms
-- **Any integer:** `1.` `03.` `1995.` — covers ordinals and European date formats
-- **Roman numerals:** `I.` `III.` `XII.` — validated with regex to avoid false matches
+**`SpineItem.kt`**
+Simple data class: chapter title + absolute path to the HTML file.
 
-#### Step 3 — Equal-chunk splitting
-Segments over 250 chars divided into N equal pieces; each split at nearest word boundary; non-last chunks get trailing `" …"`.
+**`EpubCombiner.kt`**
+Takes all the spine items and merges them into one big HTML document. For each chapter:
+- Wraps it in `<div id="chapter-N">` so we can jump to chapters by ID
+- Converts all relative `src` and `href` attributes to absolute `file://` paths so images and links work when loaded from cache
+- Annotates every block element (paragraph, heading, etc.) with `data-si` (the sentence index of the first sentence in that block) and `data-sentences` (all sentences in that block as `"index:length"` pairs) — used for exact position tracking when closing the reader
+- Adds `<span id="__nb_end"></span>` at the very end of the document — the end-of-book sentinel
 
-**Note:** Re-importing books is required after any changes to the splitting logic.
+The combined HTML is written to `__reader.html` in the cache dir and loaded via a `file://` URL. This gives it a real file origin so images load correctly.
 
 ---
 
-### 6. Android WebView Scroll Position — Critical Gotcha
+### In-App Reader (`ui/reader/`)
 
-**`document.documentElement.scrollTop` is ALWAYS 0 in Android WebView** when the user scrolls via native touch. This caused all previous position save/restore attempts to fail silently.
+**`ReaderPreferences.kt`**
+Simple SharedPreferences wrapper that stores the user's font size preference (12–28sp, step 2).
 
-| Method | Works? | Notes |
-|--------|--------|-------|
-| `document.documentElement.scrollTop` (JS) | ❌ Always 0 | Android WebView native touch scroll doesn't update it |
-| `window.pageYOffset` (JS) | ✅ | Works for reading current scroll position in JS |
-| `window.scrollTo(0, y)` (JS) | ✅ | Works for programmatic scrolling |
-| `webView.scrollY` (Kotlin) | ✅ | Most reliable; always correct |
+**`EpubReaderViewModel.kt`**
+Manages all reader state. Key responsibilities:
 
-**Rule:** For reading scroll position at close time, always use `webView.scrollY` in Kotlin, not JS.
+- **Loading** — checks if the book is still parsing, then calls EpubExtractor + EpubCombiner to prepare the HTML, then emits a `Ready` state with the file URL
+- **Page tracking** — maintains `currentPageIndex` as a StateFlow. Kotlin only ever increments or decrements this number — JS is responsible for deciding when it's allowed
+- **Position anchor** — maintains `restoreSentenceIndex`, the sentence index at the top of the current page. Updated by JS after every page turn via `onDataSi()`. Used to restore position after an orientation change
+- **Orientation re-init** — `startReinit()` shows an opaque overlay and sets a flag to skip the next `onDataSi()` call (so rotating the phone doesn't drift your reading position). `onReady()` hides the overlay once JS finishes re-laying out the columns
+- **Closing** — `closeWithPosition()` saves the current page index and sentence index to the DB, and optionally starts or restores the notification
 
----
+**`EpubReaderScreen.kt`**
+The actual UI. A WebView fills most of the screen, with an animated top bar that appears/disappears on center tap.
 
-### 7. `absolutePath` vs `canonicalPath` — Symlink Gotcha
+The screen is organized around several pieces of JS that get injected at different times:
 
-On Android, `/data/user/0/com.notibook.app/` is a symlink to `/data/data/com.notibook.app/`. Using `absolutePath` on one side and `canonicalPath` on the other causes path comparison mismatches (e.g. internal link navigation fails silently because the paths never match).
+**At page load (`onPageFinished`):**
+Sets up the CSS column layout. The body is made exactly one viewport wide and tall, and `column-width` is set to the same value — so the browser lays out content as side-by-side columns, each one screen wide. Dimensions come from Kotlin's measured view size (always reliable) not `window.innerWidth` (can be 0 at load time).
 
-**Rule:** Always use `File.canonicalPath` everywhere in the epub package. Never mix with `absolutePath`.
+**`buildJs(w, h)` — the main JS, injected once after load:**
 
----
+- Blocks all native touch scrolling (we handle all navigation ourselves)
+- Stores `window.__colW` and `window.__colH` (viewport dimensions) globally
+- **`sentinelVisible()`** — the end-of-book check. Calls `getBoundingClientRect()` on `<span id="__nb_end">`. If that span's left edge is currently on screen, we're on the last page. `getBoundingClientRect()` accounts for the CSS transform on the body, so it always reflects the element's actual on-screen position — no math required.
+- **Touch handling** — swipe left/right and tap left/right/center zones for navigation. Before calling `NotiBook.onNextPage()`, checks `sentinelVisible()` — if the sentinel is on screen, swipe right does nothing.
+- **`window.__getSentenceAtTop(x, y)`** — finds the exact sentence at a given point on screen using `caretRangeFromPoint()` (gets the exact character at that point), then walks up the DOM to find the enclosing block's `data-sentences` attribute, then uses the sentence lengths stored there to figure out which specific sentence is at that character position. Used both when closing the reader (to save position for the notification) and after page turns (to update the orientation-restore anchor).
+- **`tryRestore()`** — restores the saved page position when the book first opens. Polls until `scrollWidth > viewport width` so it knows the browser has finished laying out at least one column's worth of content before navigating.
+- **`fixImages()`** — CSS percentage widths and viewport units don't work reliably inside CSS columns. This function iterates every `<img>` element and sets explicit pixel dimensions via inline styles, constraining by both width and height so images always fit within one page. Exposed as `window.__fixImages` so `buildReinitJs` can call it after orientation change.
+- **Chapter tracking** — after every page turn, checks which chapter's `<div>` the current page is inside and reports it to the ViewModel via `onChapterVisible()`
 
-### 8. `@JavascriptInterface` Threading
+**`buildReinitJs(w, h, si)` — injected when orientation changes:**
+When the phone rotates, the WebView width changes. `addOnLayoutChangeListener` detects this and calls `startReinit()` (shows overlay, freezes position anchor) then runs this JS:
+1. Updates `window.__colW`, `window.__colH`, and all the CSS column dimensions to the new viewport size
+2. Waits 250ms (the overlay is definitely visible by then, safe to do invisible work)
+3. Resets the body's transform to 0 (so layout coordinates are clean)
+4. Finds the block containing `restoreSentenceIndex` via `data-sentences`
+5. Computes the character offset within that block proportionally (DB lengths are Jsoup-normalized, JS text nodes are raw — proportional mapping bridges the difference)
+6. Uses `getClientRects()` on that character position to find what column it's now in
+7. Navigates to that column and calls `NotiBook.onReady()` to hide the overlay
 
-`@JavascriptInterface` methods run on a **background thread**, not the main thread. Any UI or View operations must be dispatched via `webView.post { }`.
+**Chapter jumps (LaunchedEffect):**
+When the user picks a chapter from the dropdown, finds that chapter's `<div>`, reads its `offsetLeft`, divides by column width to get the page number, and navigates there.
 
----
-
-### 9. ViewModel Lifecycle vs. AppScope
-
-`viewModelScope` is cancelled when the ViewModel is cleared, which happens immediately when the user navigates back. Any coroutine launched in `viewModelScope` to save data on close may never complete.
-
-**Rule:** Use `app.appScope.launch` for save operations that must survive navigation pop. Capture all state **synchronously** before launching the coroutine.
-
----
-
-### 10. In-App Reader — Pagination Architecture
-
-**Current:** CSS columns pagination — one combined HTML document, body laid out as CSS columns each exactly one viewport wide.
-```css
-body {
-  column-width: <viewportWidth>px;  /* set by JS from Android-measured dimensions */
-  column-gap: 0;
-  column-fill: auto;
-  overflow: visible;                 /* body expands; html clips */
-}
-```
-- Browser handles all text flow and page breaks — never cuts mid-line
-- Navigation: `translateX(-pageIndex * colW)` with 0.25s ease animation
-- Total pages: `body.scrollWidth / colW`
-- Font size changes: CSS re-injected, total pages recalculated
-- Orientation changes: `configChanges` prevents Activity restart; `addOnLayoutChangeListener` detects width change, shows opaque overlay, runs `buildReinitJs` to update column dimensions and restore position, hides overlay via `NotiBook.onReady()`
+**`handleInternalLink()` in ViewModel:**
+When the user taps an internal link inside the book (e.g. a footnote), finds the target element, computes what page it's on, and navigates there.
 
 ---
 
-### 11. Position Tracking — Sentence-Level Sentinel Spans
+### Database (`data/db/`)
 
-**Problem:** Paragraph-level `data-si` on `<p>` elements is too coarse. A long paragraph can span many pages; closing the reader mid-paragraph jumps the notification back to the paragraph's first sentence.
+Room ORM. Two tables:
 
-**Solution:** `EpubCombiner` inserts a zero-width sentinel `<span>` at the **start of each sentence** within each paragraph:
-```html
-<p>
-  <span data-si="1042"></span>She walked into the room.
-  <span data-si="1043"></span>Their eyes met.
-  <span data-si="1044"></span>The silence was unbearable.
-</p>
-```
-- Sentinels are inline, zero-width — no visual effect, no layout impact
-- `elementFromPoint(w/2, top)` → walk up DOM → finds the nearest preceding sentinel → exact sentence index
-- If a sentence spans a page boundary, `elementFromPoint` at the top of the next page finds the NEXT sentence's sentinel — correct behaviour, since that is the first complete sentence visible
+**`books`**
+One row per imported book. Key fields:
+- `currentIndex` — which sentence the notification is currently showing
+- `currentChapter` — chapter title, stored so the notification can display it
+- `readerSpineIndex` — the page index the reader was on when last closed (used to restore position on re-open)
+- `notificationActive` — whether this book's notification is currently showing
+- `notifWasActiveBeforeReader` — when you open the reader, if the notification was active it gets hidden. This flag remembers that so it can be restored when you close the reader.
+- `isParsing` — true while the parse worker is running; reader shows an error if you try to open a still-parsing book
 
-**Reader position restore (orientation change):**
-- `caretRangeFromPoint(w/2, top)` returns the exact character at the top of the current page
-- Walk up to the enclosing `data-si` sentinel → sentence index + char offset within sentence
-- After column re-init: find the sentinel span by `data-si`, advance `charOffset` characters into it, compute its new `offsetLeft / colW` → navigate to that page
-- Worst-case drift after orientation change: fraction of one sentence — imperceptible
+**`sentences`**
+One row per sentence. Key fields:
+- `sentenceIndex` — global 0-based index across the whole book
+- `spineItemIndex` — which chapter (spine item) this sentence is in
+- `blockIndex` — which block element within that chapter (used to match sentences back to HTML elements for `data-sentences` annotation)
+- `type` — SENTENCE, IMAGE, TABLE, or DIVIDER
 
-**Chapter page breaks:**
-- Every chapter div (except the first) gets `break-before: column` so chapters always start on a fresh page
-- Applied in JS after page load: `document.querySelectorAll('[id^="chapter-"]')` → set style on indices 1+
+**Schema version: 2**
 
 ---
 
-### 12. Rich Media in Notifications (Planned)
+### UI (`ui/`)
 
-`SentenceEntity` will gain a `type` field: `SENTENCE | IMAGE | TABLE | DIVIDER`.
+**`LibraryScreen.kt`**
+Shows all imported books as cards. Tapping any book opens the reader (`reader/{bookId}` route). All books — EPUB and TXT — go through the same reader.
 
-- `IMAGE` entries: `text = "Image — open book to see"`, shown in notification like any sentence
-- `TABLE` entries: `text = "Table — open book to see"`, shown in notification like any sentence
-- `DIVIDER` entries (em-dashes, decorative section breaks): `showInNotification = false`, skipped in notifications, rendered in reader
-- These entries participate in the sentence index sequence, so position tracking never silently jumps over a full-page image
+**`AppNavigation.kt`**
+Defines the nav graph. Also observes `pendingOpenBookId` on `NotiBookApp` — when the user taps a notification while the app is already open, this triggers navigation to the correct book without restarting the activity.
 
----
+**`BookDetailScreen.kt`**
+Currently unused for navigation (all books go to the reader), but still exists for the notification toggle, restart from beginning, and remove book functionality.
 
-## File Structure
+**`MainActivity.kt`**
+Reads `bookId` from the intent extras set by notification taps. Passes it to `AppNavigation` as the initial book to open. Also handles `onNewIntent` for the case where the app is already open and another notification is tapped.
 
-```
-NotiBook/
-├── app/src/main/
-│   ├── java/com/notibook/app/
-│   │   ├── MainActivity.kt                        # Reads bookId from intent; handles onNewIntent
-│   │   ├── NotiBookApp.kt                         # appScope (public); pendingOpenBookId
-│   │   ├── notification/
-│   │   │   ├── NotificationHelper.kt              # Build & post; dark mode detection; unique PendingIntents per bookId
-│   │   │   ├── NotificationActionReceiver.kt      # ← → dismiss snooze
-│   │   │   ├── BootReceiver.kt
-│   │   │   ├── SnoozeAlarmReceiver.kt
-│   │   │   └── NotificationService.kt             # empty stub
-│   │   ├── parsing/
-│   │   │   ├── EpubParser.kt                      # EPUB text extraction; planned: HTML annotation
-│   │   │   ├── TxtParser.kt                       # TXT, \n\n boundaries
-│   │   │   ├── SentenceSplitter.kt                # BreakIterator + merge + chunk
-│   │   │   └── ParseWorker.kt
-│   │   ├── epub/
-│   │   │   ├── EpubExtractor.kt                   # Unzip EPUB to cache; canonicalPath
-│   │   │   ├── EpubSpineReader.kt                 # Read spine from content.opf; canonicalPath
-│   │   │   ├── EpubCombiner.kt                    # Merge spine chapters into one HTML doc
-│   │   │   └── SpineItem.kt                       # (chapterTitle, htmlFile, canonicalPath)
-│   │   ├── data/
-│   │   │   ├── BookRepository.kt
-│   │   │   └── db/
-│   │   │       ├── AppDatabase.kt                 # Version 2 (planned: 3)
-│   │   │       ├── BookEntity.kt                  # readerSpineIndex (= page index); notifWasActiveBeforeReader
-│   │   │       ├── SentenceEntity.kt              # spineItemIndex; planned: type field
-│   │   │       ├── BookDao.kt
-│   │   │       └── SentenceDao.kt
-│   │   └── ui/
-│   │       ├── reader/
-│   │       │   ├── EpubReaderScreen.kt            # WebView reader; tap zones; CSS columns (planned)
-│   │       │   ├── EpubReaderViewModel.kt         # Page-based state; closeWithPosition
-│   │       │   └── ReaderPreferences.kt           # fontSize SharedPreferences
-│   │       ├── detail/
-│   │       │   ├── BookDetailScreen.kt
-│   │       │   └── BookDetailViewModel.kt
-│   │       ├── library/
-│   │       │   ├── LibraryScreen.kt               # onBookClick: (bookId: Long)
-│   │       │   └── LibraryViewModel.kt
-│   │       ├── navigation/AppNavigation.kt        # reader/{bookId}; pendingOpenBookId observer
-│   │       └── theme/Theme.kt
-│   ├── res/
-│   │   ├── layout/
-│   │   │   ├── notification_expanded.xml          # Only custom layout (arrows + sentence)
-│   │   │   └── notification_collapsed.xml         # Kept but not used
-│   │   ├── drawable/
-│   │   │   ├── notif_btn_bg.xml                   # Rounded grey bg for arrows + title
-│   │   │   ├── ic_book.xml
-│   │   │   └── [other icons]
-│   │   └── values/
-│   │       ├── strings.xml
-│   │       └── themes.xml
-│   └── AndroidManifest.xml
-├── build.gradle.kts
-├── .gitignore
-└── CLAUDE.md
-```
+**`NotiBookApp.kt`**
+Application class. Creates the notification channel, calls `restoreActiveNotifications()` on startup (re-shows any notifications that were active when the app was last killed), and exposes `appScope` — a coroutine scope that survives ViewModel lifecycle. Important: position saves when closing the reader use `appScope` not `viewModelScope`, because `viewModelScope` cancels the moment you navigate away, which would abort the save.
 
 ---
 
-## DB Schema
+## Key Design Decisions
 
-### `books` table (version 2)
-| Column | Type | Notes |
-|--------|------|-------|
-| id | Long PK | |
-| title, author | String | |
-| coverPath | String? | |
-| filePath | String | |
-| totalSentences | Int | 0 while parsing |
-| parsedSentenceCount | Int | for progress bar |
-| isParsing | Boolean | |
-| currentIndex | Int | 0-based, current notification sentence |
-| currentChapter | String | |
-| notificationActive | Boolean | |
-| readerSpineIndex | Int | repurposed: page index in reader |
-| readerScrollPercent | Float | **to be removed in v3** |
-| notifWasActiveBeforeReader | Boolean | restore notif on reader close |
+### Why no foreground service?
+On MIUI (Xiaomi phones), foreground service notifications are force-expanded and can't be swiped away. Removed it entirely — notifications are posted directly. Trade-off: Android can kill the notification under memory pressure, but that's acceptable for this use case.
 
-### `sentences` table (version 2)
-| Column | Type | Notes |
-|--------|------|-------|
-| id | Long PK | |
-| bookId | Long | |
-| sentenceIndex | Int | 0-based, global across book |
-| text | String | |
-| chapter | String | |
-| spineItemIndex | Int | 0 for TXT |
-| type | String | **planned v3**: SENTENCE/IMAGE/TABLE/DIVIDER |
+### Why one big HTML document instead of one chapter at a time?
+The whole book is combined into one HTML file and paginated with CSS columns. This makes inter-chapter links, chapter jumps, and smooth chapter-boundary navigation trivial. The downside is memory usage and the browser's lazy column layout computation — but for text-heavy books the memory footprint is manageable, and we've designed around the lazy layout issue (sentinel for end-of-book, proportional restore for orientation changes).
+
+### Why `canonicalPath` everywhere?
+Android has `/data/user/0/com.notibook.app/` as a symlink to `/data/data/com.notibook.app/`. If you use `absolutePath` on one side and `canonicalPath` on the other, path comparisons silently fail. Always use `canonicalPath` in the epub package.
+
+### Why does JS own the end-of-book decision?
+The reader has no concept of "total pages" in Kotlin. The browser computes CSS columns lazily — it only lays out columns near the current viewport. Reading `scrollWidth` (the total document width) too early gives a wrong answer for large books. Instead, JS checks whether `<span id="__nb_end">` is currently visible on screen via `getBoundingClientRect()` before every forward navigation. If the sentinel is on screen, we're on the last page. This requires zero math and zero cross-thread communication.
+
+### Why `appScope` for position saves?
+`viewModelScope` is cancelled immediately when you navigate back. Any database write launched there may never complete. `appScope` lives for the lifetime of the process and guarantees the save finishes.
+
+### Why `configChanges="orientation|screenSize"` in the manifest?
+Prevents Android from destroying and recreating the Activity on rotation. Without this, the WebView would reload the entire book on every orientation change. With it, the Activity survives, the WebView stays loaded, and we just need to update the CSS column dimensions and restore the position — handled by `buildReinitJs`.
+
+### Why is `@JavascriptInterface` threading important?
+Methods marked `@JavascriptInterface` run on a background thread, not the main thread. Any UI operations must be dispatched via `webView.post { }`. The bridge is sequential though — calls made from JS in order are received in order — which is why calling `onTotalPages()` before `onNextPage()` (back when that existed) was safe.
 
 ---
 
-## Planned Next Work (in order)
+## How Position Tracking Works End-to-End
 
-1. **EpubCombiner — sentence-level sentinel spans:** Replace paragraph-level `data-si` on `<p>` elements with zero-width `<span data-si="N"></span>` at the start of each sentence within each paragraph. Requires mapping DB sentence texts back to positions in the HTML paragraph content.
-2. **EpubReaderScreen — fix flash to page 0 on orientation change:** Remove the `b.style.transform = 'translateX(0px)'` line from `buildReinitJs`; the transform reset is unnecessary (offsetLeft is layout-space, not viewport-space) and causes a brief flash to page 0 before the correct page is found.
-3. **EpubReaderScreen — caretRangeFromPoint for orientation restore:** Replace `data-si` paragraph lookup in `buildReinitJs` with `caretRangeFromPoint` + char offset within the sentence span, for sub-sentence precision across orientation changes.
-4. **EpubReaderScreen — chapter page breaks:** Apply `break-before: column` to all chapter divs except the first so each chapter starts on a fresh page.
-5. **DB migration 2→3:** Add `type` to `SentenceEntity` (SENTENCE/IMAGE/TABLE/DIVIDER); remove `readerScrollPercent` from `BookEntity`.
+This is the most complex part of the app. Here's the full flow:
+
+**While reading:**
+After every page turn, JS waits 300ms (for the animation to finish), then calls `window.__getSentenceAtTop(screenCenterX, 60)`. This function uses `caretRangeFromPoint()` to find the exact character at that point, walks up the DOM to the enclosing block's `data-sentences` attribute, and uses the stored sentence lengths to identify the exact sentence. The result is sent to `onDataSi()` in the ViewModel, which stores it as `restoreSentenceIndex`.
+
+**On orientation change:**
+`startReinit()` freezes `restoreSentenceIndex` (by setting `skipNextDataSiUpdate = true`) so the first `onDataSi()` call after re-init — which comes from the page animation, not the user — doesn't drift the anchor. `buildReinitJs` uses the frozen `restoreSentenceIndex` to find the sentence's new position in the reflowed columns and navigate there.
+
+**On close:**
+JS calls `window.__getSentenceAtTop()` one more time to get the sentence at the top of the current page, passes it to `closeWithPosition()` in the ViewModel, which writes it to the DB. The notification then uses that sentence index.
 
 ---
 
-## Build & Test Workflow
+## Build & Test
 
 ```bash
 # Build
-cd ~/Downloads/Claude\ Code/NotiBook
+cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
 ./gradlew assembleDebug
 
-# Install (overwrite existing)
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-
-# Clean rebuild if needed
-./gradlew clean assembleDebug
+# Install
+~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # View logs
-adb logcat -s NotiBook
+~/Library/Android/sdk/platform-tools/adb logcat -s NotiBook NotiBook_JS
+
+# Clean rebuild
+./gradlew clean assembleDebug
 ```
 
-**After changing SentenceSplitter or EpubParser:** remove and re-import all books — parsed sentences are stored in the DB and won't be re-split automatically.
+**After changing sentence parsing (SentenceSplitter, EpubParser, TxtParser):** remove and re-import all books — sentences are stored in the DB and won't be re-split automatically.
 
-### Manual Testing Checklist
-- [ ] Import EPUB and TXT
-- [ ] Notification appears in correct color for light/dark mode
-- [ ] Expand notification: ← title → row with grey button backgrounds, sentence text below
-- [ ] Tap ← / → : navigate sentences; arrow disappears at first/last
-- [ ] Tap notification title: opens reader at correct book
-- [ ] Tap notification title while app open: navigates to correct book
-- [ ] Reader: tap left zone → prev page, right zone → next page, center → toggle top bar
-- [ ] Reader: swipe left → next page, swipe right → prev page
-- [ ] Reader: close → reopening restores to same page
-- [ ] Reader: "Close & start notification" → notification starts at correct sentence
-- [ ] Chapter dropdown in reader → jumps to chapter
-- [ ] Internal links in EPUB → navigate correctly
-- [ ] Images visible in reader; "Image — open book to see" in notification (planned)
-- [ ] Font size change → reflows correctly (planned)
+**After changing EpubCombiner or buildTxtHtml:** re-import books to regenerate `__reader.html` with the latest HTML structure.
 
 ---
 
-## Known Limitations
+## DB Schema (version 2)
 
-1. **Position tracking coarse** — `data-si` currently on paragraph-level; sentence-level sentinel spans planned (see Planned Next Work).
-2. **Orientation change flash** — brief flash to page 0 before correct page found; fix pending (remove translateX reset from buildReinitJs).
-3. **Chapters don't start on new pages** — chapter page breaks planned.
-4. **No scrolling in expanded notification** — RemoteViews whitelist excludes ScrollView. Long segments capped at 8 lines.
-5. **No custom collapsed layout** — collapsed state uses Android's standard template (no arrows).
-6. **Notification lifespan** — no foreground service means system can kill under memory pressure. Intentional trade-off.
-7. **Re-import required after parser changes** — DB stores pre-parsed sentences; no auto-migration.
+### `books` table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | Long PK | auto-generated |
+| title, author | String | from EPUB metadata or filename |
+| coverPath | String? | path to extracted cover image |
+| filePath | String | original file path |
+| totalSentences | Int | 0 while parsing |
+| parsedSentenceCount | Int | for progress tracking |
+| isParsing | Boolean | reader blocks if true |
+| currentIndex | Int | current notification sentence |
+| currentChapter | String | shown in notification |
+| notificationActive | Boolean | is notification currently showing |
+| readerSpineIndex | Int | last page index in reader |
+| readerScrollPercent | Float | unused, to be removed in v3 |
+| notifWasActiveBeforeReader | Boolean | restore notif on reader close |
+
+### `sentences` table
+| Column | Type | Notes |
+|--------|------|-------|
+| id | Long PK | auto-generated |
+| bookId | Long | foreign key to books |
+| sentenceIndex | Int | 0-based, global across whole book |
+| text | String | the sentence text |
+| chapter | String | chapter title |
+| spineItemIndex | Int | which spine item (0 for TXT) |
+| blockIndex | Int | which block element within spine item |
+| type | String | SENTENCE / IMAGE / TABLE / DIVIDER |
 
 ---
 
-## Git Workflow & Commit Strategy
+## Git Workflow
 
-**When to push to GitHub:**
-- After a major architectural or feature change
-- When 3–5 small changes have accumulated and form a logical unit
-- Before major refactoring or risky changes (for safety)
-- **NOT** after every tiny adjustment
+Push after logical feature groups, not after every change.
 
 ```bash
-git log --oneline        # view history
-git show <hash>          # inspect a commit
-git revert <hash>        # safely undo
-git push                 # push to GitHub
+git log --oneline    # view history
+git push             # push to GitHub
 ```
 
 Each commit message includes `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
