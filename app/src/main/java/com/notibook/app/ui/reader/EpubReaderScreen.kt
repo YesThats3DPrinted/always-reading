@@ -644,24 +644,37 @@ private fun ReaderContent(
             };
 
             // ── Sentence at top ───────────────────────────────────────────────
-            // Scans all [data-si] marker spans and returns the highest sentence
-            // index whose marker is on the current visible column at or above y.
-            // Works with both empty marker spans (EPUB) and wrapped spans (TXT).
+            // Finds the first visible character at (x, y), then walks backwards
+            // through the DOM from that position until it hits a [data-si] marker.
+            // This correctly handles long sentences that span multiple pages:
+            // the marker will be somewhere before the current position in the DOM,
+            // and backwards traversal always finds it regardless of where it renders.
             window.__getSentenceAtTop = function(x, y) {
-                var cw = window.__colW || window.innerWidth;
-                var best = 0, bestY = -Infinity;
-                var els = document.querySelectorAll('[data-si]');
-                for (var i = 0; i < els.length; i++) {
-                    var r = els[i].getBoundingClientRect();
-                    // Visible column: left is within [-1, cw+1]; at or above y
-                    if (r.left >= -1 && r.left < cw + 1 && r.top <= y) {
-                        var si = parseInt(els[i].dataset.si);
-                        if (r.top > bestY || (r.top === bestY && si > best)) {
-                            best = si; bestY = r.top;
-                        }
+                var range = document.caretRangeFromPoint
+                    ? document.caretRangeFromPoint(x, y)
+                    : (document.caretPositionFromPoint
+                        ? (function(){ var p=document.caretPositionFromPoint(x,y); if(!p) return null; var r=document.createRange(); r.setStart(p.offsetNode,p.offset); return r; })()
+                        : null);
+                if (!range) return 0;
+
+                // Walk backwards from the caret node through the DOM
+                var node = range.startContainer;
+                // Start from the caret's position within its text node — step back
+                // into the preceding sibling/ancestor chain
+                while (node) {
+                    // Check this node itself if it's an element with data-si
+                    if (node.nodeType === 1 && node.dataset && node.dataset.si !== undefined) {
+                        return parseInt(node.dataset.si);
+                    }
+                    // Walk to previous sibling, descending into its last descendant
+                    if (node.previousSibling) {
+                        node = node.previousSibling;
+                        while (node.lastChild) node = node.lastChild;
+                    } else {
+                        node = node.parentNode;
                     }
                 }
-                return best;
+                return 0;
             };
 
             // ── Touch handling ────────────────────────────────────────────────
