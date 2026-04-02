@@ -80,6 +80,18 @@ fun EpubReaderScreen(
     // Scrubber drag state — tracks thumb during drag without changing currentPageIndex
     var sliderDragging  by remember { mutableStateOf(false) }
     var sliderDragValue by remember { mutableFloatStateOf(0f) }
+    // After the user releases the slider, lock the counter to the sentence they chose.
+    // Cleared when a new drag starts so the live preview resumes immediately.
+    // This is ONLY for the counter label — sliderDragValue (thumb) is unaffected.
+    var lockedDisplaySi by remember { mutableStateOf<Int?>(null) }
+
+    // Keep sliderDragValue in sync with actual position when not actively dragging.
+    // This is the ONLY place sliderDragValue is written outside of the drag gesture.
+    LaunchedEffect(currentSentenceIndex, totalSentences) {
+        if (!sliderDragging && totalSentences > 1) {
+            sliderDragValue = currentSentenceIndex.toFloat() / (totalSentences - 1)
+        }
+    }
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
@@ -442,11 +454,16 @@ fun EpubReaderScreen(
                     .background(BAR_COLOR)
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                // Sentence counter label — shows live preview while dragging
-                val displayIndex = if (sliderDragging)
-                    (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
-                else
-                    currentSentenceIndex
+                // Sentence counter label.
+                // During drag: live preview from sliderDragValue.
+                // After release: locked to the user's chosen sentence (lockedDisplaySi) so
+                //   the counter doesn't jump to the actual top-of-page sentence on navigation.
+                // Otherwise: the confirmed currentSentenceIndex from the last page turn.
+                val displayIndex = when {
+                    sliderDragging   -> (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
+                    lockedDisplaySi != null -> lockedDisplaySi!!
+                    else             -> currentSentenceIndex
+                }
                 val sentenceDisplay = if (totalSentences > 0)
                     "Sentence ${"%,d".format(displayIndex + 1)} of ${"%,d".format(totalSentences)}"
                 else ""
@@ -461,19 +478,18 @@ fun EpubReaderScreen(
 
                 // Sentence scrubber — position and navigation are sentence-index based,
                 // no page count or scrollWidth involved.
+                // sliderDragValue is the single source of truth: the LaunchedEffect above
+                // syncs it from currentSentenceIndex when not dragging.
                 Slider(
-                    value = when {
-                        sliderDragging  -> sliderDragValue
-                        totalSentences > 1 -> currentSentenceIndex.toFloat() / (totalSentences - 1)
-                        else            -> 0f
-                    },
+                    value = sliderDragValue,
                     onValueChange = { v ->
+                        lockedDisplaySi = null   // clear lock so live preview shows during drag
                         sliderDragging  = true
                         sliderDragValue = v
                     },
                     onValueChangeFinished = {
                         val targetSi = (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
-                        vm.onCurrentSentence(targetSi) // optimistic update — holds thumb in place
+                        lockedDisplaySi = targetSi  // hold counter at chosen sentence after release
                         sliderDragging = false
                         webViewRef.value?.evaluateJavascript("""
                             (function(){
@@ -495,10 +511,6 @@ fun EpubReaderScreen(
                                 r.setEnd(el, 0);
                                 var co = r.toString().replace(/\s+/g,' ').length;
                                 if (window.__restoreByCharOffset) window.__restoreByCharOffset(co);
-                                setTimeout(function(){
-                                    var si = window.__getSentenceAtTop ? window.__getSentenceAtTop(1,1) : 0;
-                                    NotiBook.onCurrentSentence(si);
-                                }, 100);
                             })()
                         """.trimIndent(), null)
                     },
