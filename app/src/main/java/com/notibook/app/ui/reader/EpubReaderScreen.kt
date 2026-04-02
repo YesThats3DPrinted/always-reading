@@ -837,9 +837,6 @@ private fun ReaderContent(
                         var totalPg = Math.ceil(b.scrollWidth / w);
                         if (totalPg > 0) NotiBook.onTotalPages(totalPg);
 
-                        var siReinit = window.__getSentenceAtTop ? window.__getSentenceAtTop(w*0.5, 60) : 0;
-                        NotiBook.onCurrentSentence(siReinit);
-
                         requestAnimationFrame(function(){
                             if (window.__reinitId !== myId) return;
                             NotiBook.onReady();
