@@ -2,7 +2,9 @@ package com.notibook.app.ui.reader
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -20,11 +22,20 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlin.math.max
+import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,21 +61,48 @@ fun EpubReaderScreen(
 ) {
     LaunchedEffect(bookId) { vm.init(bookId) }
 
-    val state              by vm.state.collectAsState()
-    val currentPageIndex   by vm.currentPageIndex.collectAsState()
-    val scrollToChapter    by vm.scrollToChapterCommand.collectAsState()
-    val topBarVisible      by vm.topBarVisible.collectAsState()
-    val isReiniting        by vm.isReiniting.collectAsState()
-    val notificationActive by vm.notificationActive.collectAsState()
-    val chapterTitle       by vm.currentChapterTitle.collectAsState()
-    val prefs              = vm.readerPreferences
+    val state               by vm.state.collectAsState()
+    val currentPageIndex    by vm.currentPageIndex.collectAsState()
+    val scrollToChapter     by vm.scrollToChapterCommand.collectAsState()
+    val topBarVisible       by vm.topBarVisible.collectAsState()
+    val isReiniting         by vm.isReiniting.collectAsState()
+    val notificationActive  by vm.notificationActive.collectAsState()
+    val chapterTitle        by vm.currentChapterTitle.collectAsState()
+    val currentChapterIndex    by vm.currentChapterIndex.collectAsState()
+    val totalPages             by vm.totalPages.collectAsState()
+    val currentSentenceIndex   by vm.currentSentenceIndex.collectAsState()
+    val totalSentences         by vm.totalSentences.collectAsState()
+    val prefs                  = vm.readerPreferences
 
     var fontSize        by remember { mutableIntStateOf(prefs.fontSize) }
+    var orientationMode by remember { mutableIntStateOf(prefs.orientationMode) }
     var showChapterList by remember { mutableStateOf(false) }
+
+    // Scrubber drag state — tracks thumb during drag without changing currentPageIndex
+    var sliderDragging  by remember { mutableStateOf(false) }
+    var sliderDragValue by remember { mutableFloatStateOf(0f) }
 
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    // Android 13+ notification permission handling
+    // Apply/restore orientation lock
+    val activity = LocalContext.current as? Activity
+    LaunchedEffect(orientationMode) {
+        activity?.requestedOrientation = when (orientationMode) {
+            0    -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            1    -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+            2    -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            3    -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            // Restore auto-rotate when leaving the reader
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    // Android 13+ notification permission
     val context = LocalContext.current
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -84,8 +122,7 @@ fun EpubReaderScreen(
     }
 
     // CSS-columns pagination: animate the slide (unless JS already positioned),
-    // then report char offset after the animation finishes so the ViewModel always
-    // has a fresh anchor for orientation-change restoration.
+    // then report char offset for the orientation-change anchor.
     LaunchedEffect(currentPageIndex) {
         val wv = webViewRef.value ?: return@LaunchedEffect
         val skipAnim = vm.isSkippingPageAnimation()
@@ -106,7 +143,7 @@ fun EpubReaderScreen(
         """.trimIndent(), null)
     }
 
-    // Jump to chapter when ViewModel emits the command
+    // Jump to chapter
     LaunchedEffect(scrollToChapter) {
         val idx = scrollToChapter ?: return@LaunchedEffect
         webViewRef.value?.evaluateJavascript("""
@@ -126,8 +163,6 @@ fun EpubReaderScreen(
     fun closeReader(startNotification: Boolean) {
         val wv = webViewRef.value
         if (wv != null) {
-            // Get both char offset (for reader restore) and data-si (for notification position).
-            // Return as "charOffset|sentenceIndex" so we can parse the single callback string.
             wv.evaluateJavascript("""
                 (function(){
                     var w=window.__colW||window.innerWidth;
@@ -192,6 +227,7 @@ fun EpubReaderScreen(
                 onScrollToPage       = { page -> vm.onScrollToPage(page) },
                 onInternalLink       = { href -> vm.handleInternalLink(href, webViewRef.value) },
                 onCharOffset         = { offset -> vm.onCharOffset(offset) },
+                onTotalPages         = { total -> vm.onTotalPages(total) },
                 onReady              = { vm.onReady() },
                 onStartReinit        = { vm.startReinit() },
                 restoreCharOffsetRef = { vm.restoreCharOffset },
@@ -199,12 +235,12 @@ fun EpubReaderScreen(
             )
         }
 
-        // Opaque overlay shown while CSS columns re-initialize after orientation change.
+        // Overlay during column re-init
         if (isReiniting) {
             Box(modifier = Modifier.fillMaxSize().background(BG_COLOR))
         }
 
-        // Two-row top bar: Row 1 = title · chapter, Row 2 = actions
+        // ── Top bar (two rows, slides in from top) ────────────────────────────
         AnimatedVisibility(
             visible  = topBarVisible,
             enter    = slideInVertically(initialOffsetY = { -it }),
@@ -228,70 +264,15 @@ fun EpubReaderScreen(
                     style    = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp)
+                    modifier = Modifier.padding(start = 12.dp, top = 16.dp, end = 12.dp)
                 )
 
-                // Row 2: notification toggle | spacer | font A- | font A+ | chapter list
+                // Row 2: chapters | orientation | A- A+ | spacer | notification toggle
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier          = Modifier.fillMaxWidth()
+                    modifier          = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
                 ) {
-                    // Notification toggle
-                    IconButton(
-                        onClick = { requestNotificationToggle(!notificationActive) }
-                    ) {
-                        Icon(
-                            painter            = painterResource(R.drawable.ic_notification_reader),
-                            contentDescription = if (notificationActive) "Disable notification" else "Enable notification",
-                            tint               = if (notificationActive) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.35f)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    // Font size decrease
-                    TextButton(
-                        onClick          = {
-                            if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
-                                fontSize -= 2; vm.setFontSize(fontSize)
-                            }
-                        },
-                        contentPadding   = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            "A",
-                            color = TEXT_COLOR.copy(alpha = if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) 1f else 0.35f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "−",
-                            color = TEXT_COLOR.copy(alpha = if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) 1f else 0.35f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-
-                    // Font size increase
-                    TextButton(
-                        onClick          = {
-                            if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
-                                fontSize += 2; vm.setFontSize(fontSize)
-                            }
-                        },
-                        contentPadding   = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            "A",
-                            color = TEXT_COLOR.copy(alpha = if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) 1f else 0.35f),
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            "+",
-                            color = TEXT_COLOR.copy(alpha = if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) 1f else 0.35f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-
-                    // Chapter list
+                    // Chapter list — highlights current chapter
                     if (spineItems.isNotEmpty()) {
                         Box {
                             IconButton(onClick = { showChapterList = true }) {
@@ -302,16 +283,19 @@ fun EpubReaderScreen(
                                 )
                             }
                             DropdownMenu(
-                                expanded          = showChapterList,
-                                onDismissRequest  = { showChapterList = false }
+                                expanded         = showChapterList,
+                                onDismissRequest = { showChapterList = false },
+                                modifier         = Modifier.background(BAR_COLOR)
                             ) {
                                 spineItems.forEachIndexed { index, item ->
+                                    val isCurrent = index == currentChapterIndex
                                     DropdownMenuItem(
                                         text = {
                                             Text(
                                                 text     = item.chapterTitle.ifBlank { "Chapter ${index + 1}" },
                                                 maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
+                                                overflow = TextOverflow.Ellipsis,
+                                                color    = if (isCurrent) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.5f)
                                             )
                                         },
                                         onClick = {
@@ -323,7 +307,190 @@ fun EpubReaderScreen(
                             }
                         }
                     }
+
+                    // Orientation picker
+                    var showOrientMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { showOrientMenu = true }) {
+                            Icon(
+                                painter = painterResource(
+                                    when (orientationMode) {
+                                        1    -> R.drawable.ic_orient_portrait_flip
+                                        2    -> R.drawable.ic_orient_landscape_left
+                                        3    -> R.drawable.ic_orient_landscape_right
+                                        else -> R.drawable.ic_orient_portrait
+                                    }
+                                ),
+                                contentDescription = "Orientation",
+                                tint = TEXT_COLOR
+                            )
+                        }
+                        DropdownMenu(
+                            expanded          = showOrientMenu,
+                            onDismissRequest  = { showOrientMenu = false },
+                            modifier          = Modifier.background(BAR_COLOR).width(IntrinsicSize.Min)
+                        ) {
+                            val orientItems = listOf(
+                                Triple(0, R.drawable.ic_orient_portrait,       Icons.Default.ArrowUpward),
+                                Triple(1, R.drawable.ic_orient_portrait_flip,  Icons.Default.ArrowDownward),
+                                Triple(2, R.drawable.ic_orient_landscape_left, Icons.AutoMirrored.Filled.ArrowBack),
+                                Triple(3, R.drawable.ic_orient_landscape_right,Icons.AutoMirrored.Filled.ArrowForward)
+                            )
+                            orientItems.forEach { (mode, iconRes, arrowIcon) ->
+                                val itemTint = if (orientationMode == mode) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.5f)
+                                DropdownMenuItem(
+                                    text = {},
+                                    leadingIcon = {
+                                        Row(
+                                            verticalAlignment    = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                painter            = painterResource(iconRes),
+                                                contentDescription = null,
+                                                tint               = itemTint
+                                            )
+                                            Icon(
+                                                imageVector        = arrowIcon,
+                                                contentDescription = null,
+                                                modifier           = Modifier.size(16.dp),
+                                                tint               = itemTint
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        orientationMode = mode
+                                        prefs.orientationMode = mode
+                                        showOrientMenu = false
+                                    },
+                                    colors = MenuDefaults.itemColors(
+                                        textColor        = TEXT_COLOR,
+                                        leadingIconColor = TEXT_COLOR
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    // Font size buttons — grouped close together
+                    TextButton(
+                        onClick        = {
+                            if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
+                                fontSize -= 2; vm.setFontSize(fontSize)
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "A−",
+                            color = TEXT_COLOR.copy(
+                                alpha = if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) 1f else 0.35f
+                            ),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    TextButton(
+                        onClick        = {
+                            if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
+                                fontSize += 2; vm.setFontSize(fontSize)
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "A+",
+                            color = TEXT_COLOR.copy(
+                                alpha = if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) 1f else 0.35f
+                            ),
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // Notification toggle — full TEXT_COLOR when on, dim when off
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (notificationActive)
+                                    TEXT_COLOR.copy(alpha = 0.15f)
+                                else
+                                    Color.Transparent
+                            )
+                            .clickable { requestNotificationToggle(!notificationActive) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter            = painterResource(R.drawable.ic_notification_reader),
+                            contentDescription = if (notificationActive) "Disable notification" else "Enable notification",
+                            modifier           = Modifier.size(22.dp),
+                            tint               = if (notificationActive) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.35f)
+                        )
+                    }
                 }
+            }
+        }
+
+        // ── Bottom bar (scrubber, slides in from bottom at same time as top bar) ─
+        AnimatedVisibility(
+            visible  = topBarVisible,
+            enter    = slideInVertically(initialOffsetY = { it }),
+            exit     = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(BAR_COLOR)
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                // Sentence counter label
+                val sentenceDisplay = if (totalSentences > 0)
+                    "Sentence ${"%,d".format(currentSentenceIndex + 1)} of ${"%,d".format(totalSentences)}"
+                else ""
+                if (sentenceDisplay.isNotEmpty()) {
+                    Text(
+                        text     = sentenceDisplay,
+                        color    = TEXT_COLOR.copy(alpha = 0.7f),
+                        style    = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
+
+                // Page scrubber
+                Slider(
+                    value = when {
+                        sliderDragging -> sliderDragValue
+                        totalPages > 1 -> currentPageIndex.toFloat() / (totalPages - 1)
+                        else           -> 0f
+                    },
+                    onValueChange = { v ->
+                        sliderDragging  = true
+                        sliderDragValue = v
+                    },
+                    onValueChangeFinished = {
+                        sliderDragging = false
+                        val targetPage = (sliderDragValue * max(1, totalPages - 1)).roundToInt()
+                        webViewRef.value?.evaluateJavascript("""
+                            (function(){
+                                var cw=window.__colW||window.innerWidth;
+                                var page=$targetPage;
+                                window.__currentPage=page;
+                                document.body.style.setProperty('transition','none','important');
+                                document.body.style.transform='translateX(-'+(page*cw)+'px)';
+                                NotiBook.onScrollToPage(page);
+                            })()
+                        """.trimIndent(), null)
+                    },
+                    colors = SliderDefaults.colors(
+                        thumbColor         = TEXT_COLOR,
+                        activeTrackColor   = TEXT_COLOR,
+                        inactiveTrackColor = TEXT_COLOR.copy(alpha = 0.25f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
@@ -347,14 +514,13 @@ private fun ReaderContent(
     onScrollToPage: (Int) -> Unit,
     onInternalLink: (String) -> Unit,
     onCharOffset: (Long) -> Unit,
+    onTotalPages: (Int) -> Unit,
     onReady: () -> Unit,
     onStartReinit: () -> Unit,
-    restoreCharOffsetRef: () -> Long,  // lambda so layout listener always reads latest value
+    restoreCharOffsetRef: () -> Long,
     webViewRef: MutableState<WebView?>
 ) {
     fun buildCss() = buildString {
-        // body * — NOT * — so body itself is never max-width constrained
-        // (body must expand freely to hold all CSS columns)
         append("body * { color: #E0E0E0 !important; max-width: 100% !important;")
         append(" box-sizing: border-box !important;")
         append(" overflow-wrap: break-word !important; word-break: break-word !important; }")
@@ -368,7 +534,6 @@ private fun ReaderContent(
         append(" font-size: ${fontSize}px !important;")
         append(" font-family: serif !important;")
         append(" line-height: 1.6 !important; }")
-        // Viewport units (vw/vh) for images — % collapses to 0 inside CSS columns
         append(" img { max-width: 100vw !important; width: auto !important;")
         append(" height: auto !important; max-height: 100vh !important;")
         append(" break-inside: avoid !important; page-break-inside: avoid !important; }")
@@ -377,14 +542,10 @@ private fun ReaderContent(
         append(" pre, code { white-space: pre-wrap !important; }")
     }
 
-    // Main JS injected once after page load.
-    // w/h from Kotlin measured dimensions — never use window.innerWidth which can be 0.
     fun buildJs(w: Int, h: Int) = """
         (function() {
-            // ── Block native scroll (all navigation handled by us) ────────────
             document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
 
-            // ── Dimensions from Kotlin layout (always correct) ─────────────────
             var w = $w; var h = $h;
             window.__colW = w;
             window.__colH = h;
@@ -406,9 +567,7 @@ private fun ReaderContent(
                 return cur;
             }
 
-            // ── End-of-book guard ─────────────────────────────────────────────
-            // getBoundingClientRect() accounts for the body's CSS transform, so
-            // rect.left reflects the element's actual on-screen X position.
+            // ── End-of-book sentinel ──────────────────────────────────────────
             function sentinelVisible() {
                 var end = document.getElementById('__nb_end');
                 if (!end) return false;
@@ -417,8 +576,7 @@ private fun ReaderContent(
             }
 
             // ── Navigate to page without animation ────────────────────────────
-            // Always read window.__colW so post-reinit calls use the updated
-            // landscape/split-screen column width, not the stale portrait closure w.
+            // Always reads window.__colW so post-reinit calls use the updated width.
             function goToPage(page) {
                 window.__currentPage = page;
                 var cw = window.__colW || w;
@@ -427,9 +585,6 @@ private fun ReaderContent(
             }
 
             // ── Character offset — save position ──────────────────────────────
-            // Returns the number of normalized characters (whitespace collapsed)
-            // from the start of body to the caret at (x, y).
-            // Consistent across font sizes, orientations, and viewport changes.
             window.__getCharOffset = function(x, y) {
                 try {
                     var caret = null;
@@ -437,10 +592,7 @@ private fun ReaderContent(
                         caret = document.caretRangeFromPoint(x, y);
                     } else if (document.caretPositionFromPoint) {
                         var pos = document.caretPositionFromPoint(x, y);
-                        if (pos) {
-                            caret = document.createRange();
-                            caret.setStart(pos.offsetNode, pos.offset);
-                        }
+                        if (pos) { caret = document.createRange(); caret.setStart(pos.offsetNode, pos.offset); }
                     }
                     if (!caret) return 0;
                     var r = document.createRange();
@@ -451,33 +603,17 @@ private fun ReaderContent(
             };
 
             // ── Character offset — restore position ───────────────────────────
-            // Finds the DOM position corresponding to targetOffset normalized chars
-            // from the start of body, then navigates to that column.
             window.__restoreByCharOffset = function(targetOffset) {
-                if (targetOffset <= 0) {
-                    goToPage(0);
-                    NotiBook.onScrollToPage(0);
-                    return;
-                }
+                if (targetOffset <= 0) { goToPage(0); NotiBook.onScrollToPage(0); return; }
                 try {
-                    // Scan rawText character by character, simulating replace(/\s+/g,' '),
-                    // to find rawIdx where normalized count reaches targetOffset.
                     var rawText = document.body.textContent;
-                    var normLen = 0;
-                    var rawIdx  = 0;
-                    var inWs    = false;
+                    var normLen = 0, rawIdx = 0, inWs = false;
                     while (rawIdx < rawText.length && normLen < targetOffset) {
                         var isWs = /\s/.test(rawText[rawIdx]);
-                        if (isWs) {
-                            if (!inWs) { normLen++; inWs = true; }
-                        } else {
-                            normLen++;
-                            inWs = false;
-                        }
+                        if (isWs) { if (!inWs) { normLen++; inWs = true; } }
+                        else      { normLen++; inWs = false; }
                         rawIdx++;
                     }
-
-                    // Walk text nodes to find the node containing rawIdx
                     var walker = document.createTreeWalker(
                         document.body, NodeFilter.SHOW_TEXT, null, false);
                     var cumRaw = 0, tn;
@@ -488,8 +624,8 @@ private fun ReaderContent(
                             var range = document.createRange();
                             range.setStart(tn, Math.min(localOff, len));
                             var rects = range.getClientRects();
-                            var page;
                             var cw2 = window.__colW || w;
+                            var page;
                             if (rects && rects.length > 0) {
                                 page = Math.max(0, Math.floor(rects[0].left / cw2));
                             } else {
@@ -501,12 +637,10 @@ private fun ReaderContent(
                         }
                         cumRaw += len;
                     }
-                } catch(e) {
-                    console.log('NotiBook restoreByCharOffset error: ' + e);
-                }
+                } catch(e) { console.log('NotiBook restoreByCharOffset error: ' + e); }
             };
 
-            // ── Sentence at top (data-si walk — used when closing the reader) ─
+            // ── Sentence at top (for close position) ─────────────────────────
             window.__getSentenceAtTop = function(x, y) {
                 var el = document.elementFromPoint(x, y);
                 for (var i = 0; i < 8 && el; i++) {
@@ -516,33 +650,30 @@ private fun ReaderContent(
                 return -1;
             };
 
-            // ── Tap & swipe handling ──────────────────────────────────────────
+            // ── Touch handling ────────────────────────────────────────────────
             var touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-            var SWIPE_THRESHOLD = 50;
-            var TAP_MAX_MOVE    = 10;
-            var TAP_MAX_MS      = 300;
+            var SWIPE_THRESHOLD = 50, TAP_MAX_MOVE = 10, TAP_MAX_MS = 300;
 
             document.addEventListener('touchstart', function(e) {
-                touchStartX    = e.touches[0].clientX;
-                touchStartY    = e.touches[0].clientY;
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
                 touchStartTime = Date.now();
             }, { passive: true });
 
             document.addEventListener('touchend', function(e) {
-                var dx    = e.changedTouches[0].clientX - touchStartX;
-                var dy    = e.changedTouches[0].clientY - touchStartY;
-                var dt    = Date.now() - touchStartTime;
-                var absDx = Math.abs(dx);
-                var absDy = Math.abs(dy);
-
+                var dx = e.changedTouches[0].clientX - touchStartX;
+                var dy = e.changedTouches[0].clientY - touchStartY;
+                var dt = Date.now() - touchStartTime;
+                var absDx = Math.abs(dx), absDy = Math.abs(dy);
                 if (absDx > SWIPE_THRESHOLD && absDx > absDy) {
                     if (dx < 0) { if (!sentinelVisible()) NotiBook.onNextPage(); }
                     else        NotiBook.onPrevPage();
                 } else if (absDx < TAP_MAX_MOVE && absDy < TAP_MAX_MOVE && dt < TAP_MAX_MS) {
                     var x = touchStartX;
-                    if (x < w * 0.3)      NotiBook.onPrevPage();
-                    else if (x > w * 0.7) { if (!sentinelVisible()) NotiBook.onNextPage(); }
-                    else                   NotiBook.onCenterTap();
+                    var cw = window.__colW || $w;
+                    if (x < cw * 0.3)      NotiBook.onPrevPage();
+                    else if (x > cw * 0.7) { if (!sentinelVisible()) NotiBook.onNextPage(); }
+                    else                    NotiBook.onCenterTap();
                 }
             }, { passive: true });
 
@@ -565,7 +696,7 @@ private fun ReaderContent(
                 chapterEls[ci].style.setProperty('page-break-before', 'always', 'important');
             }
 
-            // ── Image sizing (CSS % and vw unreliable inside columns) ─────────
+            // ── Image sizing ──────────────────────────────────────────────────
             function fixImages() {
                 var cw = window.__colW || window.innerWidth || $w;
                 var ch = window.__colH || window.innerHeight || $h;
@@ -574,10 +705,8 @@ private fun ReaderContent(
                     var img = imgs[i];
                     if (img.naturalWidth <= 0) continue;
                     img.style.setProperty('display', 'block', 'important');
-                    var scaleW = Math.min(1, cw / img.naturalWidth);
-                    var scaleH = Math.min(1, ch / img.naturalHeight);
-                    var scale  = Math.min(scaleW, scaleH);
-                    var pw = Math.round(img.naturalWidth  * scale);
+                    var scale = Math.min(Math.min(1, cw / img.naturalWidth), Math.min(1, ch / img.naturalHeight));
+                    var pw = Math.round(img.naturalWidth * scale);
                     var ph = Math.round(img.naturalHeight * scale);
                     img.style.setProperty('width',      pw + 'px', 'important');
                     img.style.setProperty('height',     ph + 'px', 'important');
@@ -590,14 +719,11 @@ private fun ReaderContent(
             window.addEventListener('load', function() { fixImages(); });
 
             // ── Restore position on initial load ──────────────────────────────
-            // restoreCharOffset >= 0: last action was in-reader → restore by char offset.
-            // restoreCharOffset == -1: last action was notification → go to sentence data-si.
             var targetCharOffset = $restoreCharOffset;
             var targetSi         = $restoreCurrentIndex;
             window.__currentPage = 0;
 
             function tryRestore() {
-                // Wait until columns are laid out (scrollWidth grows beyond one viewport)
                 if (document.body.scrollWidth <= w + 5 && (targetCharOffset > 0 || targetSi > 0)) {
                     setTimeout(tryRestore, 300); return;
                 }
@@ -611,31 +737,22 @@ private fun ReaderContent(
                         NotiBook.onScrollToPage(page);
                     }
                 }
-                // Always report chapter after restore
                 if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
-                // Report charOffset anchor so orientation reinit has something to restore to
                 setTimeout(function(){
                     var offset = window.__getCharOffset ? window.__getCharOffset(w * 0.5, 60) : 0;
                     NotiBook.onCharOffset(offset);
+                    // Report approximate total pages for the scrubber (display only, not for clamping)
+                    var totalPg = Math.ceil(document.body.scrollWidth / w);
+                    if (totalPg > 0) NotiBook.onTotalPages(totalPg);
                 }, 200);
             }
             setTimeout(tryRestore, 600);
         })();
     """.trimIndent()
 
-    // JS injected when orientation changes or the viewport resizes.
-    // Updates column dimensions, waits for the overlay to cover the screen,
-    // then restores position by char offset and hides the overlay.
-    //
-    // CRITICAL: This function is fully self-contained — it does NOT call
-    // window.__restoreByCharOffset or goToPage. Those functions read window.__colW,
-    // which is a global that could theoretically be stale. Instead, all transform
-    // and page calculations use the local `var w=$w` baked in by Kotlin, exactly
-    // as the old buildReinitJs did. This guarantees correctness regardless of global state.
     fun buildReinitJs(w: Int, h: Int, charOffset: Long) = """
         (function(){
             var w=$w; var h=$h;
-            // Increment reinit counter. If a newer call arrives, earlier ones abort.
             window.__reinitId = (window.__reinitId || 0) + 1;
             var myId = window.__reinitId;
 
@@ -651,10 +768,6 @@ private fun ReaderContent(
             b.style.setProperty('column-width', w+'px', 'important');
             b.style.setProperty('transition',   'none', 'important');
 
-            // 250ms: overlay is covering the screen.
-            // Reset transform to 0 so that getClientRects() returns layout positions
-            // (not offset by the previous transform), then wait two rAF frames for the
-            // browser to finish reflowing columns at the new width before reading rects.
             setTimeout(function(){
                 if (window.__reinitId !== myId) return;
                 b.style.transform = 'translateX(0px)';
@@ -669,9 +782,6 @@ private fun ReaderContent(
 
                         if (targetOffset >= 0) {
                             try {
-                                // Scan body.textContent with the same whitespace normalization
-                                // as __getCharOffset (collapse runs of whitespace to one space)
-                                // to find the raw character index corresponding to targetOffset.
                                 var rawText = b.textContent;
                                 var normLen = 0, rawIdx = 0, inWs = false;
                                 while (rawIdx < rawText.length && normLen < targetOffset) {
@@ -680,9 +790,7 @@ private fun ReaderContent(
                                     else       { normLen++; inWs = false; }
                                     rawIdx++;
                                 }
-                                // Walk text nodes to find the node at rawIdx.
-                                var walker = document.createTreeWalker(
-                                    b, NodeFilter.SHOW_TEXT, null, false);
+                                var walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT, null, false);
                                 var cumRaw = 0, tn;
                                 while ((tn = walker.nextNode())) {
                                     var len = tn.textContent.length;
@@ -691,8 +799,6 @@ private fun ReaderContent(
                                         var range = document.createRange();
                                         range.setStart(tn, Math.min(localOff, len));
                                         var rects = range.getClientRects();
-                                        // Transform is 0, so rects[0].left == layout X directly.
-                                        // Divide by LOCAL w (not window.__colW) for safety.
                                         if (rects && rects.length > 0) {
                                             targetPage = Math.max(0, Math.floor(rects[0].left / w));
                                         } else {
@@ -703,19 +809,19 @@ private fun ReaderContent(
                                     }
                                     cumRaw += len;
                                 }
-                            } catch(e) {
-                                console.log('NotiBook reinit restore error: ' + e);
-                            }
+                            } catch(e) { console.log('NotiBook reinit error: ' + e); }
                         }
 
-                        // Set transform directly using local w — not via goToPage/window.__colW.
                         window.__currentPage = targetPage;
                         b.style.transform = 'translateX(-' + (targetPage * w) + 'px)';
                         NotiBook.onScrollToPage(targetPage);
 
                         if (window.__fixImages) window.__fixImages();
 
-                        // One more frame so the correct page is painted before overlay disappears.
+                        // Update total pages for scrubber after reflow
+                        var totalPg = Math.ceil(b.scrollWidth / w);
+                        if (totalPg > 0) NotiBook.onTotalPages(totalPg);
+
                         requestAnimationFrame(function(){
                             if (window.__reinitId !== myId) return;
                             NotiBook.onReady();
@@ -726,13 +832,13 @@ private fun ReaderContent(
         })()
     """.trimIndent()
 
-    val cssRef            = rememberUpdatedState(buildCss())
-    val onCharOffsetRef   = rememberUpdatedState(onCharOffset)
-    val onReadyRef        = rememberUpdatedState(onReady)
-    val onStartReinitRef  = rememberUpdatedState(onStartReinit)
-    val restoreCharRef    = rememberUpdatedState(restoreCharOffsetRef)
+    val cssRef           = rememberUpdatedState(buildCss())
+    val onCharOffsetRef  = rememberUpdatedState(onCharOffset)
+    val onTotalPagesRef  = rememberUpdatedState(onTotalPages)
+    val onReadyRef       = rememberUpdatedState(onReady)
+    val onStartReinitRef = rememberUpdatedState(onStartReinit)
+    val restoreCharRef   = rememberUpdatedState(restoreCharOffsetRef)
 
-    // Re-inject CSS when font size changes
     LaunchedEffect(fontSize) {
         val escaped = cssRef.value
             .replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
@@ -759,18 +865,16 @@ private fun ReaderContent(
                     }
                 }
                 settings.apply {
-                    javaScriptEnabled   = true
-                    allowFileAccess     = true
-                    domStorageEnabled   = false
-                    builtInZoomControls = false
-                    displayZoomControls = false
+                    javaScriptEnabled    = true
+                    allowFileAccess      = true
+                    domStorageEnabled    = false
+                    builtInZoomControls  = false
+                    displayZoomControls  = false
                     setSupportZoom(false)
                     useWideViewPort      = false
                     loadWithOverviewMode = false
-                    @Suppress("DEPRECATION")
-                    allowFileAccessFromFileURLs = true
-                    @Suppress("DEPRECATION")
-                    allowUniversalAccessFromFileURLs = true
+                    @Suppress("DEPRECATION") allowFileAccessFromFileURLs          = true
+                    @Suppress("DEPRECATION") allowUniversalAccessFromFileURLs     = true
                 }
 
                 addJavascriptInterface(object {
@@ -781,36 +885,30 @@ private fun ReaderContent(
                     @JavascriptInterface fun onScrollToPage(page: Int)    = onScrollToPage(page)
                     @JavascriptInterface fun onInternalLink(href: String) = onInternalLink(href)
                     @JavascriptInterface fun onCharOffset(offset: Long)   = onCharOffsetRef.value(offset)
+                    @JavascriptInterface fun onTotalPages(total: Int)     = onTotalPagesRef.value(total)
                     @JavascriptInterface fun onReady()                    = onReadyRef.value()
                     @JavascriptInterface fun debugReport(msg: String)     = Log.d("NotiBook", "JS: $msg")
                 }, "NotiBook")
 
-                // Detect layout changes (orientation, split screen, PiP).
-                // Threshold: any change > 1px triggers a column re-init.
-                // Both width AND height changes are handled (split screen divider drag).
                 addOnLayoutChangeListener { _, left, top, right, bottom,
                                             oldLeft, oldTop, oldRight, oldBottom ->
                     val newW = right  - left
                     val newH = bottom - top
                     val oldW = oldRight  - oldLeft
                     val oldH = oldBottom - oldTop
-                    // oldW == 0 or oldH == 0: initial layout, skip.
                     val widthChanged  = oldW > 0 && Math.abs(newW - oldW) > 1 && newW > 0 && newH > 0
                     val heightChanged = oldH > 0 && Math.abs(newH - oldH) > 1 && newW > 0 && newH > 0
                     if (widthChanged || heightChanged) {
                         val density = context.resources.displayMetrics.density
                         val wCss    = (newW / density).toInt()
                         val hCss    = (newH / density).toInt()
-                        val offset  = restoreCharRef.value()  // latest char offset from ViewModel
-                        onStartReinitRef.value()               // show overlay immediately
-                        post {
-                            evaluateJavascript(buildReinitJs(wCss, hCss, offset), null)
-                        }
+                        val offset  = restoreCharRef.value()
+                        onStartReinitRef.value()
+                        post { evaluateJavascript(buildReinitJs(wCss, hCss, offset), null) }
                     }
                 }
 
                 webViewClient = object : WebViewClient() {
-                    // Intercept file:// sub-resource requests so images always load.
                     override fun shouldInterceptRequest(
                         view: WebView,
                         request: android.webkit.WebResourceRequest
@@ -844,16 +942,10 @@ private fun ReaderContent(
                     override fun onPageFinished(view: WebView, url: String) {
                         val css     = cssRef.value
                         val escaped = css.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-
                         val density = view.context.resources.displayMetrics.density
                         val wCss = (view.width  / density).toInt()
                         val hCss = (view.height / density).toInt()
-
-                        // If the view isn't measured yet, defer until it is.
-                        if (wCss <= 0 || hCss <= 0) {
-                            view.post { onPageFinished(view, url) }
-                            return
-                        }
+                        if (wCss <= 0 || hCss <= 0) { view.post { onPageFinished(view, url) }; return }
 
                         view.evaluateJavascript("""
                             (function(){
@@ -886,17 +978,14 @@ private fun ReaderContent(
         update = { wv ->
             if (!isLoaded) {
                 isLoaded = true
-                // EPUB: combinedHtml is empty, load from file:// URL (real origin for images).
-                // TXT: combinedHtml is non-empty, load via loadDataWithBaseURL.
-                if (combinedHtml.isEmpty()) {
-                    wv.loadUrl(baseUrl)
-                } else {
-                    wv.loadDataWithBaseURL(baseUrl, combinedHtml, "text/html", "UTF-8", null)
-                }
+                if (combinedHtml.isEmpty()) wv.loadUrl(baseUrl)
+                else wv.loadDataWithBaseURL(baseUrl, combinedHtml, "text/html", "UTF-8", null)
             }
         },
+        // WebView fills the full screen — both bars float as overlays on top of it.
+        // No top/bottom padding so text uses the full available height.
         modifier = Modifier
-            .padding(top = 92.dp, start = 20.dp, end = 20.dp, bottom = 16.dp)
+            .padding(horizontal = 20.dp)
             .fillMaxSize()
     )
 }

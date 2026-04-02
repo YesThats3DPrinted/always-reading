@@ -311,3 +311,25 @@ git push             # push to GitHub
 ```
 
 Each commit message includes `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+
+---
+
+## Color Palette
+
+The entire app uses a single dark color palette — no Material3 theme colors, no purple. All screens use these hardcoded values:
+
+| Name | Hex | Usage |
+|------|-----|-------|
+| `BG_COLOR` | `#1A1A1A` | Screen backgrounds (reader body, library scaffold) |
+| `CARD_COLOR` / `BAR_COLOR` | `#2C2C2C` | Cards, top/bottom bars, dropdowns, FAB, TopAppBar |
+| `TEXT_COLOR` | `#E0E0E0` | All primary text, active icons, slider track |
+| `DIM_COLOR` | `#8A8A8A` | Secondary/metadata text, inactive icons |
+| `SELECTED_COLOR` | `#3C3C3C` | Selected card background in library |
+| `COVER_PLACEHOLDER` | `#404040` | Book cover placeholder, notification toggle active bg (library) |
+
+### Rules
+- **Never use `MaterialTheme.colorScheme.primary`** (purple) anywhere in the UI. Replace with `TEXT_COLOR` for active states.
+- **Never use `MaterialTheme.colorScheme.surface/primaryContainer/onSurface`** for visible UI elements — hardcode from the palette above.
+- Active/selected states use `TEXT_COLOR` (full or `copy(alpha=0.15f)` background) not a tint color.
+- Inactive states use `TEXT_COLOR.copy(alpha = 0.35f)` or `DIM_COLOR.copy(alpha = 0.5f)`.
+- The same constants are defined in both `EpubReaderScreen.kt` (as `BG_COLOR`, `BAR_COLOR`, `TEXT_COLOR`) and `LibraryScreen.kt` (as `BG_COLOR`, `CARD_COLOR`, `TEXT_COLOR`, `DIM_COLOR`) with identical values.

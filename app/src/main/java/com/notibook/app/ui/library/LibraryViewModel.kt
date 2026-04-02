@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.notibook.app.NotiBookApp
 import com.notibook.app.data.db.BookEntity
+import com.notibook.app.notification.NotificationHelper
 import com.notibook.app.parsing.ParseWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,6 +62,22 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             toDelete.forEach { bookId ->
                 val book = repo.getBook(bookId) ?: return@forEach
                 repo.deleteBook(book)
+            }
+        }
+    }
+
+    // ── Notification toggle ───────────────────────────────────────────────────
+
+    fun toggleNotification(book: BookEntity) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            if (book.notificationActive) {
+                repo.updateNotificationActive(book.id, false)
+                NotificationHelper.hide(ctx, book.id)
+            } else {
+                val sentence = repo.getSentence(book.id, book.currentIndex) ?: return@launch
+                repo.updateNotificationActive(book.id, true)
+                NotificationHelper.show(ctx, book, sentence)
             }
         }
     }

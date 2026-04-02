@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Phone body (landscape) -->
+    <path
+        android:pathData="M5,7 L19,7 A2.5,2.5 0 0,1 21.5,9.5 L21.5,14.5 A2.5,2.5 0 0,1 19,17 L5,17 A2.5,2.5 0 0,1 2.5,14.5 L2.5,9.5 A2.5,2.5 0 0,1 5,7 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"/>
+
+    <!-- Camera notch — LEFT (filled pill, rotated) -->
+    <path
+        android:pathData="M4.5,10.25 A0.75,0.75 0 0,1 6,10.25 L6,13.75 A0.75,0.75 0 0,1 4.5,13.75 Z"
+        android:fillColor="#FFFFFF"/>
+
+    <!-- Home button dot — RIGHT -->
+    <path
+        android:pathData="M18,12 A0.75,0.75 0 0,1 19.5,12 A0.75,0.75 0 0,1 18,12 Z"
+        android:fillColor="#FFFFFF"/>
+
+</vector>

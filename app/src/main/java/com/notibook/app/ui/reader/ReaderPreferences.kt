@@ -11,9 +11,15 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getInt(KEY_FONT_SIZE, DEFAULT_FONT_SIZE)
         set(value) = prefs.edit().putInt(KEY_FONT_SIZE, value).apply()
 
+    /** 0 = portrait, 1 = portrait flipped, 2 = landscape left, 3 = landscape right */
+    var orientationMode: Int
+        get() = prefs.getInt(KEY_ORIENTATION, 0)
+        set(value) = prefs.edit().putInt(KEY_ORIENTATION, value).apply()
+
     companion object {
-        private const val KEY_FONT_SIZE  = "reader_font_size"
-        const val DEFAULT_FONT_SIZE      = 20
-        val FONT_SIZE_RANGE              = 12..28 step 2
+        private const val KEY_FONT_SIZE   = "reader_font_size"
+        private const val KEY_ORIENTATION = "reader_orientation"
+        const val DEFAULT_FONT_SIZE       = 20
+        val FONT_SIZE_RANGE               = 12..28 step 2
     }
 }

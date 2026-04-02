@@ -54,6 +54,15 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _currentChapterTitle = MutableStateFlow("")
     val currentChapterTitle: StateFlow<String> = _currentChapterTitle.asStateFlow()
 
+    // Index of the spine item currently visible — used to highlight the active chapter
+    private val _currentChapterIndex = MutableStateFlow(-1)
+    val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
+
+    // Approximate total page count reported by JS after columns are laid out.
+    // Used only for the bottom scrubber display — not for any navigation clamping.
+    private val _totalPages = MutableStateFlow(0)
+    val totalPages: StateFlow<Int> = _totalPages.asStateFlow()
+
     private val _scrollToChapterCommand = MutableStateFlow<Int?>(null)
     val scrollToChapterCommand: StateFlow<Int?> = _scrollToChapterCommand.asStateFlow()
 
@@ -81,6 +90,13 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _notificationActive = MutableStateFlow(false)
     val notificationActive: StateFlow<Boolean> = _notificationActive.asStateFlow()
 
+    // Current sentence index and total — observed from DB for the bottom bar counter
+    private val _currentSentenceIndex = MutableStateFlow(0)
+    val currentSentenceIndex: StateFlow<Int> = _currentSentenceIndex.asStateFlow()
+
+    private val _totalSentences = MutableStateFlow(0)
+    val totalSentences: StateFlow<Int> = _totalSentences.asStateFlow()
+
     val readerPreferences: ReaderPreferences get() = prefs
 
     private var bookId: Long = -1L
@@ -91,10 +107,12 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         if (this.bookId == bookId) return
         this.bookId = bookId
         viewModelScope.launch { loadReader(bookId) }
-        // Observe notification active state from DB
+        // Observe book state from DB
         viewModelScope.launch {
             repo.getBookFlow(bookId).collect { book ->
                 _notificationActive.value = book?.notificationActive ?: false
+                _currentSentenceIndex.value = book?.currentIndex ?: 0
+                _totalSentences.value = book?.totalSentences ?: 0
             }
         }
     }
@@ -225,6 +243,11 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     fun onChapterVisible(chapterIndex: Int) {
         val items = (state.value as? ReaderState.Ready)?.spineItems ?: return
         _currentChapterTitle.value = items.getOrNull(chapterIndex)?.chapterTitle ?: ""
+        _currentChapterIndex.value = chapterIndex
+    }
+
+    fun onTotalPages(total: Int) {
+        if (total > 0) _totalPages.value = total
     }
 
     /**
