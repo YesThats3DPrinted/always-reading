@@ -635,7 +635,9 @@ private fun ReaderContent(
                         if (cumRaw + len > rawIdx) {
                             var localOff = rawIdx - cumRaw;
                             var range = document.createRange();
-                            range.setStart(tn, Math.min(localOff, len));
+                            var clampedOff = Math.min(localOff, len);
+                            range.setStart(tn, clampedOff);
+                            range.setEnd(tn, Math.min(clampedOff + 1, len));
                             var rects = range.getClientRects();
                             var cw2 = window.__colW || w;
                             var page;
