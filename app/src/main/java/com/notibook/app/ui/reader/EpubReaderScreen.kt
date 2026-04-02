@@ -442,9 +442,13 @@ fun EpubReaderScreen(
                     .background(BAR_COLOR)
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                // Sentence counter label
+                // Sentence counter label — shows live preview while dragging
+                val displayIndex = if (sliderDragging)
+                    (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
+                else
+                    currentSentenceIndex
                 val sentenceDisplay = if (totalSentences > 0)
-                    "Sentence ${"%,d".format(currentSentenceIndex + 1)} of ${"%,d".format(totalSentences)}"
+                    "Sentence ${"%,d".format(displayIndex + 1)} of ${"%,d".format(totalSentences)}"
                 else ""
                 if (sentenceDisplay.isNotEmpty()) {
                     Text(
@@ -634,6 +638,12 @@ private fun ReaderContent(
                         var len = tn.textContent.length;
                         if (cumRaw + len > rawIdx) {
                             var localOff = rawIdx - cumRaw;
+                            // Reset to absolute baseline so getClientRects() returns
+                            // natural layout positions, not viewport-relative ones.
+                            // All of this is synchronous — the browser won't repaint
+                            // until after goToPage() sets the final transform.
+                            document.body.style.setProperty('transition', 'none', 'important');
+                            document.body.style.transform = 'translateX(0)';
                             var range = document.createRange();
                             var clampedOff = Math.min(localOff, len);
                             range.setStart(tn, clampedOff);
