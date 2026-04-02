@@ -79,10 +79,12 @@ Simple data class: chapter title + absolute path to the HTML file.
 Takes all the spine items and merges them into one big HTML document. For each chapter:
 - Wraps it in `<div id="chapter-N">` so we can jump to chapters by ID
 - Converts all relative `src` and `href` attributes to absolute `file://` paths so images and links work when loaded from cache
-- Annotates every block element with `data-si` (the sentence index of the first sentence in that block) — used to find the notification sentence when the reader closes
+- Injects an empty `<span data-si="N"></span>` marker at the exact character offset where each sentence begins, using `TextNode.splitText()` so inline formatting (`<em>`, `<strong>`, links) is fully preserved. This gives sentence-level position tracking — not just block-level.
 - Adds `<span id="__nb_end"></span>` at the very end of the document — the end-of-book sentinel
 
 The combined HTML is written to `__reader.html` in the cache dir and loaded via a `file://` URL.
+
+`buildTxtHtml()` in `EpubReaderViewModel` does the same `<span data-si>` injection for TXT files, inserting markers at the correct character positions within each paragraph.
 
 ---
 
@@ -107,7 +109,7 @@ The actual UI. A WebView fills most of the screen, with an animated two-row top 
 
 **Top bar (two rows):**
 - Row 1: book title · chapter title (single line, ellipsis)
-- Row 2: notification toggle | spacer | A− | A+ | chapter list
+- Row 2: chapter list | orientation | A− A+ | spacer | notification toggle
 
 The notification toggle icon (`ic_notification_reader.xml`) is full opacity when active, 35% opacity when inactive. Tapping it toggles the notification; on Android 13+ it requests `POST_NOTIFICATIONS` permission if not already granted.
 
@@ -124,7 +126,7 @@ Sets up the CSS column layout. The body is made exactly one viewport wide and ta
 - **Touch handling** — swipe left/right and tap left/right/center zones. Checks `sentinelVisible()` before going forward.
 - **`window.__getCharOffset(x, y)`** — counts normalized characters (whitespace collapsed with `replace(/\s+/g,' ')`) from the start of the document body to the caret at `(x, y)`. Uses `caretRangeFromPoint` + `Range.toString()`. This number is stable across font size, orientation, and viewport changes.
 - **`window.__restoreByCharOffset(targetOffset)`** — inverse of `__getCharOffset`. Scans `document.body.textContent` character-by-character simulating the same whitespace normalization to find the raw DOM offset, then uses TreeWalker to find the text node, then `getClientRects()[0].left / colW` to find the column. Calls `NotiBook.onScrollToPage(page)`.
-- **`window.__getSentenceAtTop(x, y)`** — walks up the DOM from `elementFromPoint(x, y)` looking for `data-si`. Returns the sentence index. Used when closing to find the notification sentence.
+- **`window.__getSentenceAtTop(x, y)`** — scans all `[data-si]` marker spans via `querySelectorAll`, finds the one with the highest sentence index whose bounding rect is on the current visible column (`rect.left` within `[-1, colW+1]`) and at or above `y`. Returns that sentence index. Used on every page turn (to update the live counter) and on close (to save the notification position). More accurate than a DOM walk-up because markers are sentence-level, not block-level.
 - **`tryRestore()`** — restores position on first load. If `readerCharOffset >= 0`, calls `__restoreByCharOffset` (last action was in-reader). If `-1`, navigates to `data-si == restoreCurrentIndex` element (last action was notification). Polls `scrollWidth > viewport` before navigating so columns are fully laid out.
 - **`fixImages()`** — sets explicit pixel dimensions on `<img>` elements. CSS % and viewport units don't work reliably inside CSS columns. Exposed as `window.__fixImages` for reinit use.
 - **Chapter tracking** — after every page turn checks which chapter's `<div>` the current page is inside and reports it via `onChapterVisible()`.
@@ -149,9 +151,13 @@ Finds the chapter's `<div>`, computes `offsetLeft / colW`, navigates there.
 **`handleInternalLink()` in ViewModel:**
 Intercepts link taps inside the book, finds the target element (by spine index + fragment ID), and navigates to its column.
 
+**Bottom bar:**
+Sentence counter label ("Sentence X of Y") above a horizontal scrubber slider. The counter updates live on every page turn and slider drag via `onCurrentSentence`. The slider navigates by CSS column page; the label shows sentence position independently.
+
 **JS bridge methods:**
 - `onPrevPage()`, `onNextPage()`, `onCenterTap()`, `onChapterVisible(idx)`, `onScrollToPage(page)`, `onInternalLink(href)` — standard navigation
 - `onCharOffset(offset: Long)` — called after page turns and after restore; updates the ViewModel's char offset anchor
+- `onCurrentSentence(si: Int)` — called after every page turn, slider drag, `tryRestore`, and reinit with the sentence index at the top of the screen; updates the live bottom-bar counter and is used by `closeReader` for the notification position
 - `onReady()` — called by `buildReinitJs` when re-init is complete; hides the overlay
 
 ---
@@ -240,7 +246,7 @@ After every page turn, JS waits 300ms for the animation, then calls `window.__ge
 `startReinit()` sets `skipNextCharOffsetUpdate = true` so the first `onCharOffset()` after re-init doesn't overwrite the anchor. `buildReinitJs` is injected with the frozen anchor value. Inside `buildReinitJs`, after a 250ms delay (overlay is covering the screen), `__restoreByCharOffset(anchor)` navigates to the correct column in the new layout.
 
 **On close:**
-JS calls `__getCharOffset(w*0.5, 60)` for the char offset, and walks `elementFromPoint(w*0.5, 60)` up to the nearest `data-si` for the notification sentence index. Both are returned to `vm.onClose()`, which saves charOffset to `readerCharOffset` and sentenceIndex to `currentIndex` in the DB.
+JS calls `__getCharOffset(w*0.5, 60)` for the char offset, and `__getSentenceAtTop(w*0.5, 60)` for the exact sentence index (scanning all `[data-si]` markers, finding the last one at or above y=60 on the current column). Both are returned to `vm.onClose()`, which saves charOffset to `readerCharOffset` and sentenceIndex to `currentIndex` in the DB.
 
 **On next open:**
 `loadEpubReader` reads `book.readerCharOffset` and `book.currentIndex`, passes them to `ReaderState.Ready`. `buildJs` embeds them as `targetCharOffset` and `targetSi`. `tryRestore()` uses whichever is appropriate.
@@ -266,7 +272,7 @@ cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
 
 **After changing sentence parsing:** remove and re-import all books.
 
-**After changing EpubCombiner or buildTxtHtml:** re-import books to regenerate `__reader.html`.
+**After changing EpubCombiner or buildTxtHtml:** just close and reopen any book in the reader — `__reader.html` is regenerated fresh on every reader launch, so no re-import is needed.
 
 ---
 
@@ -303,7 +309,9 @@ cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
 
 ## Git Workflow
 
-Push after logical feature groups, not after every change.
+**Push BEFORE large architectural changes**, not after. This gives a clean rollback point if the refactor goes wrong.
+
+Push after logical feature groups otherwise — not after every single change.
 
 ```bash
 git log --oneline    # view history
