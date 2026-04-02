@@ -138,7 +138,7 @@ fun EpubReaderScreen(
                 setTimeout(function(){
                     var offset=window.__getCharOffset?window.__getCharOffset(cw*0.5,60):0;
                     NotiBook.onCharOffset(offset);
-                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(cw*0.5,60):0;
+                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(1,1):0;
                     NotiBook.onCurrentSentence(si);
                 },300);
             })()
@@ -169,7 +169,7 @@ fun EpubReaderScreen(
                 (function(){
                     var w=window.__colW||window.innerWidth;
                     var charOffset=window.__getCharOffset?window.__getCharOffset(w*0.5,60):0;
-                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(w*0.5,60):0;
+                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(1,1):0;
                     return ''+charOffset+'|'+si;
                 })()
             """.trimIndent()) { raw ->
@@ -480,7 +480,7 @@ fun EpubReaderScreen(
                                 document.body.style.transform='translateX(-'+(page*cw)+'px)';
                                 NotiBook.onScrollToPage(page);
                                 setTimeout(function(){
-                                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(cw*0.5,60):0;
+                                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(1,1):0;
                                     NotiBook.onCurrentSentence(si);
                                 },100);
                             })()
