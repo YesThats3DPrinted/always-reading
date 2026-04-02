@@ -58,11 +58,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val _currentChapterIndex = MutableStateFlow(-1)
     val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
-    // Approximate total page count reported by JS after columns are laid out.
-    // Used only for the bottom scrubber display — not for any navigation clamping.
-    private val _totalPages = MutableStateFlow(0)
-    val totalPages: StateFlow<Int> = _totalPages.asStateFlow()
-
     private val _scrollToChapterCommand = MutableStateFlow<Int?>(null)
     val scrollToChapterCommand: StateFlow<Int?> = _scrollToChapterCommand.asStateFlow()
 
@@ -263,9 +258,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         _currentChapterIndex.value = chapterIndex
     }
 
-    fun onTotalPages(total: Int) {
-        if (total > 0) _totalPages.value = total
-    }
 
     /**
      * Called from JS when navigating to a specific page (tryRestore, chapter jump, internal link).
