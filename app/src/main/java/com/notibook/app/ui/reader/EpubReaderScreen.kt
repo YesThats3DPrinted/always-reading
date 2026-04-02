@@ -138,6 +138,8 @@ fun EpubReaderScreen(
                 setTimeout(function(){
                     var offset=window.__getCharOffset?window.__getCharOffset(cw*0.5,60):0;
                     NotiBook.onCharOffset(offset);
+                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(cw*0.5,60):0;
+                    NotiBook.onCurrentSentence(si);
                 },300);
             })()
         """.trimIndent(), null)
@@ -167,13 +169,8 @@ fun EpubReaderScreen(
                 (function(){
                     var w=window.__colW||window.innerWidth;
                     var charOffset=window.__getCharOffset?window.__getCharOffset(w*0.5,60):0;
-                    var si=-1;
-                    var el=document.elementFromPoint(w*0.5,60);
-                    for(var i=0;i<8&&el;i++){
-                        if(el.dataset&&el.dataset.si!==undefined){si=parseInt(el.dataset.si);break;}
-                        el=el.parentElement;
-                    }
-                    return ''+charOffset+'|'+(si>=0?si:0);
+                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(w*0.5,60):0;
+                    return ''+charOffset+'|'+si;
                 })()
             """.trimIndent()) { raw ->
                 val clean = raw?.trim()?.removeSurrounding("\"") ?: "0|0"
@@ -227,6 +224,7 @@ fun EpubReaderScreen(
                 onScrollToPage       = { page -> vm.onScrollToPage(page) },
                 onInternalLink       = { href -> vm.handleInternalLink(href, webViewRef.value) },
                 onCharOffset         = { offset -> vm.onCharOffset(offset) },
+                onCurrentSentence    = { si -> vm.onCurrentSentence(si) },
                 onTotalPages         = { total -> vm.onTotalPages(total) },
                 onReady              = { vm.onReady() },
                 onStartReinit        = { vm.startReinit() },
@@ -481,6 +479,10 @@ fun EpubReaderScreen(
                                 document.body.style.setProperty('transition','none','important');
                                 document.body.style.transform='translateX(-'+(page*cw)+'px)';
                                 NotiBook.onScrollToPage(page);
+                                setTimeout(function(){
+                                    var si=window.__getSentenceAtTop?window.__getSentenceAtTop(cw*0.5,60):0;
+                                    NotiBook.onCurrentSentence(si);
+                                },100);
                             })()
                         """.trimIndent(), null)
                     },
@@ -514,6 +516,7 @@ private fun ReaderContent(
     onScrollToPage: (Int) -> Unit,
     onInternalLink: (String) -> Unit,
     onCharOffset: (Long) -> Unit,
+    onCurrentSentence: (Int) -> Unit,
     onTotalPages: (Int) -> Unit,
     onReady: () -> Unit,
     onStartReinit: () -> Unit,
@@ -640,14 +643,25 @@ private fun ReaderContent(
                 } catch(e) { console.log('NotiBook restoreByCharOffset error: ' + e); }
             };
 
-            // ── Sentence at top (for close position) ─────────────────────────
+            // ── Sentence at top ───────────────────────────────────────────────
+            // Scans all [data-si] marker spans and returns the highest sentence
+            // index whose marker is on the current visible column at or above y.
+            // Works with both empty marker spans (EPUB) and wrapped spans (TXT).
             window.__getSentenceAtTop = function(x, y) {
-                var el = document.elementFromPoint(x, y);
-                for (var i = 0; i < 8 && el; i++) {
-                    if (el.dataset && el.dataset.si !== undefined) return parseInt(el.dataset.si);
-                    el = el.parentElement;
+                var cw = window.__colW || window.innerWidth;
+                var best = 0, bestY = -Infinity;
+                var els = document.querySelectorAll('[data-si]');
+                for (var i = 0; i < els.length; i++) {
+                    var r = els[i].getBoundingClientRect();
+                    // Visible column: left is within [-1, cw+1]; at or above y
+                    if (r.left >= -1 && r.left < cw + 1 && r.top <= y) {
+                        var si = parseInt(els[i].dataset.si);
+                        if (r.top > bestY || (r.top === bestY && si > best)) {
+                            best = si; bestY = r.top;
+                        }
+                    }
                 }
-                return -1;
+                return best;
             };
 
             // ── Touch handling ────────────────────────────────────────────────
@@ -741,7 +755,8 @@ private fun ReaderContent(
                 setTimeout(function(){
                     var offset = window.__getCharOffset ? window.__getCharOffset(w * 0.5, 60) : 0;
                     NotiBook.onCharOffset(offset);
-                    // Report approximate total pages for the scrubber (display only, not for clamping)
+                    var si = window.__getSentenceAtTop ? window.__getSentenceAtTop(w * 0.5, 60) : 0;
+                    NotiBook.onCurrentSentence(si);
                     var totalPg = Math.ceil(document.body.scrollWidth / w);
                     if (totalPg > 0) NotiBook.onTotalPages(totalPg);
                 }, 200);
@@ -822,6 +837,9 @@ private fun ReaderContent(
                         var totalPg = Math.ceil(b.scrollWidth / w);
                         if (totalPg > 0) NotiBook.onTotalPages(totalPg);
 
+                        var siReinit = window.__getSentenceAtTop ? window.__getSentenceAtTop(w*0.5, 60) : 0;
+                        NotiBook.onCurrentSentence(siReinit);
+
                         requestAnimationFrame(function(){
                             if (window.__reinitId !== myId) return;
                             NotiBook.onReady();
@@ -833,8 +851,9 @@ private fun ReaderContent(
     """.trimIndent()
 
     val cssRef           = rememberUpdatedState(buildCss())
-    val onCharOffsetRef  = rememberUpdatedState(onCharOffset)
-    val onTotalPagesRef  = rememberUpdatedState(onTotalPages)
+    val onCharOffsetRef       = rememberUpdatedState(onCharOffset)
+    val onCurrentSentenceRef  = rememberUpdatedState(onCurrentSentence)
+    val onTotalPagesRef       = rememberUpdatedState(onTotalPages)
     val onReadyRef       = rememberUpdatedState(onReady)
     val onStartReinitRef = rememberUpdatedState(onStartReinit)
     val restoreCharRef   = rememberUpdatedState(restoreCharOffsetRef)
@@ -884,8 +903,9 @@ private fun ReaderContent(
                     @JavascriptInterface fun onChapterVisible(idx: Int)   = onChapterVisible(idx)
                     @JavascriptInterface fun onScrollToPage(page: Int)    = onScrollToPage(page)
                     @JavascriptInterface fun onInternalLink(href: String) = onInternalLink(href)
-                    @JavascriptInterface fun onCharOffset(offset: Long)   = onCharOffsetRef.value(offset)
-                    @JavascriptInterface fun onTotalPages(total: Int)     = onTotalPagesRef.value(total)
+                    @JavascriptInterface fun onCharOffset(offset: Long)      = onCharOffsetRef.value(offset)
+                    @JavascriptInterface fun onCurrentSentence(si: Int)     = onCurrentSentenceRef.value(si)
+                    @JavascriptInterface fun onTotalPages(total: Int)        = onTotalPagesRef.value(total)
                     @JavascriptInterface fun onReady()                    = onReadyRef.value()
                     @JavascriptInterface fun debugReport(msg: String)     = Log.d("NotiBook", "JS: $msg")
                 }, "NotiBook")

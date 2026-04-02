@@ -5,6 +5,9 @@ import com.notibook.app.parsing.BLOCK_SELECTOR
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
+import org.jsoup.nodes.TextNode
 import java.io.File
 
 /**
@@ -13,18 +16,13 @@ import java.io.File
  * Each chapter is wrapped in <div id="chapter-N"> for chapter-jump support.
  * All relative resource URLs are converted to absolute file:// paths.
  *
- * Critically: block elements in each chapter are annotated with data-si="sentenceIndex"
- * using [sentencesBySpineIndex]. This uses the same [BLOCK_SELECTOR] as EpubParser, so
- * the Nth element selected here corresponds exactly to the Nth blockIndex in the DB.
- * At reader-close time, JS can call elementFromPoint() → read data-si → exact sentence.
+ * Sentence position is annotated with empty <span data-si="N"> markers injected
+ * into the text at the exact character offset where each sentence begins.
+ * This allows JS __getSentenceAtTop() to find the precise sentence at any
+ * screen position, not just the first sentence of the enclosing block.
  */
 object EpubCombiner {
 
-    /**
-     * Initial CSS embedded directly in the HTML so the page has correct styling
-     * the instant it loads — prevents white flash and blank-screen glitch.
-     * The full CSS (with exact font size) is re-injected by JS after onPageFinished.
-     */
     private fun initialCss(fontSize: Int) = """
         body * { color: #E0E0E0 !important; max-width: 100%; box-sizing: border-box;
                  overflow-wrap: break-word; word-break: break-word; }
@@ -89,24 +87,23 @@ object EpubCombiner {
                             }
                         }
 
-                        // ── Annotate block elements with data-si ─────────────────────
-                        // Each block element gets data-si="N" where N is the sentence
-                        // index of the first sentence in that block.
-                        // Used at reader-close time to find the notification sentence
-                        // for the sentence currently visible at the top of the screen.
-                        // DIVIDER sentences are excluded (they are skipped in notifications).
+                        // ── Inject per-sentence <span data-si="N"> markers ───────────
+                        // Group sentences by blockIndex so multi-sentence blocks get
+                        // an individual marker at the start of each sentence.
                         val sentences = sentencesBySpineIndex[index]
                         if (!sentences.isNullOrEmpty()) {
-                            val blockToFirstSi: Map<Int, Int> = sentences
+                            val sentencesByBlock: Map<Int, List<SentenceEntity>> = sentences
                                 .filter { it.type != "DIVIDER" }
                                 .groupBy { it.blockIndex }
-                                .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
+                                .mapValues { (_, s) -> s.sortedBy { it.sentenceIndex } }
 
-                            val body = doc.body() ?: doc
+                            val body   = doc.body() ?: doc
                             val blocks = body.select(BLOCK_SELECTOR)
                             blocks.forEachIndexed { blockIdx, el ->
-                                val si = blockToFirstSi[blockIdx]
-                                if (si != null) el.attr("data-si", si.toString())
+                                val blockSentences = sentencesByBlock[blockIdx]
+                                if (!blockSentences.isNullOrEmpty()) {
+                                    injectSentenceMarkers(el, blockSentences)
+                                }
                             }
                         }
 
@@ -121,6 +118,73 @@ object EpubCombiner {
             }
             append("\n<span id=\"__nb_end\"></span>")
             append("\n</body></html>")
+        }
+    }
+
+    /**
+     * Inserts an empty <span data-si="N"> marker just before the start of each
+     * sentence in [sentences] within [block]. Markers are inserted into the DOM's
+     * text nodes directly so inline formatting (<em>, <strong>, <a>, etc.) is
+     * fully preserved.
+     *
+     * Processed in reverse sentence order so that earlier text-node char offsets
+     * remain valid across successive TextNode.splitText() calls.
+     */
+    private fun injectSentenceMarkers(block: Element, sentences: List<SentenceEntity>) {
+        if (sentences.isEmpty()) return
+
+        // Collect all text nodes in document order with their cumulative char offsets.
+        val textNodes = mutableListOf<Pair<TextNode, Int>>() // (node, cumStart)
+        collectTextNodes(block, textNodes, intArrayOf(0))
+        if (textNodes.isEmpty()) return
+
+        val fullText = textNodes.joinToString("") { (n, _) -> n.wholeText }
+
+        // Find where each sentence starts in the concatenated text.
+        data class Marker(val charOff: Int, val si: Int)
+        val markers = mutableListOf<Marker>()
+        var searchFrom = 0
+        for (s in sentences) {
+            val probe = s.text.trimStart().take(30)
+            if (probe.isEmpty()) continue
+            val idx = fullText.indexOf(probe, searchFrom)
+            if (idx >= 0) {
+                markers.add(Marker(idx, s.sentenceIndex))
+                searchFrom = idx + 1
+            }
+        }
+        if (markers.isEmpty()) return
+
+        // Insert spans in REVERSE order so earlier text-node offsets stay valid.
+        for (m in markers.reversed()) {
+            val (node, nodeStart) = textNodes.find { (n, s) ->
+                m.charOff >= s && m.charOff < s + n.wholeText.length
+            } ?: continue
+            val localOff = m.charOff - nodeStart
+            val spanHtml = "<span data-si=\"${m.si}\"></span>"
+            if (localOff <= 0) {
+                node.before(spanHtml)
+            } else {
+                val tail = node.splitText(localOff)
+                tail.before(spanHtml)
+            }
+        }
+    }
+
+    /** Recursively collects all TextNode descendants of [parent] in document order. */
+    private fun collectTextNodes(
+        parent: Node,
+        accumulator: MutableList<Pair<TextNode, Int>>,
+        pos: IntArray
+    ) {
+        for (child in parent.childNodes()) {
+            when (child) {
+                is TextNode -> {
+                    accumulator.add(Pair(child, pos[0]))
+                    pos[0] += child.wholeText.length
+                }
+                is Element  -> collectTextNodes(child, accumulator, pos)
+            }
         }
     }
 }

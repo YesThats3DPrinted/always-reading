@@ -182,9 +182,11 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun buildTxtHtml(content: String, sentences: List<SentenceEntity>): String {
-        val blockToFirstSi: Map<Int, Int> = sentences
+        // Group non-divider sentences by block (paragraph) index, sorted by position.
+        val sentencesByBlock: Map<Int, List<SentenceEntity>> = sentences
+            .filter { it.type != "DIVIDER" }
             .groupBy { it.blockIndex }
-            .mapValues { (_, s) -> s.minByOrNull { it.sentenceIndex }!!.sentenceIndex }
+            .mapValues { (_, s) -> s.sortedBy { it.sentenceIndex } }
 
         val fontSize = prefs.fontSize
         val initialCss = """
@@ -206,16 +208,31 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
             append("<style id='__nb_css'>$initialCss</style>")
             append("</head><body>")
             paragraphs.forEachIndexed { idx, para ->
-                val si = blockToFirstSi[idx]
-                val siAttr = if (si != null) " data-si=\"$si\"" else ""
-                append("<p$siAttr>")
-                append(
-                    para.trim()
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;")
-                        .replace("\n", "<br>")
-                )
+                val paraText  = para.trim()
+                val blockSents = sentencesByBlock[idx]
+                append("<p>")
+                if (!blockSents.isNullOrEmpty()) {
+                    // Insert an empty <span data-si="N"> marker at the start of each
+                    // sentence within the original paragraph text, preserving the text.
+                    var pos = 0
+                    for (s in blockSents) {
+                        val probe = s.text.trimStart().take(30)
+                        val sIdx  = if (probe.isNotEmpty()) paraText.indexOf(probe, pos) else -1
+                        if (sIdx >= 0) {
+                            if (sIdx > pos) append(paraText.substring(pos, sIdx)
+                                .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+                            append("<span data-si=\"${s.sentenceIndex}\"></span>")
+                            pos = sIdx
+                        }
+                    }
+                    if (pos < paraText.length) append(paraText.substring(pos)
+                        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        .replace("\n", "<br>"))
+                } else {
+                    append(paraText
+                        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        .replace("\n", "<br>"))
+                }
                 append("</p>")
             }
             append("<span id=\"__nb_end\"></span>")
@@ -266,6 +283,11 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     fun onCharOffset(offset: Long) {
         if (skipNextCharOffsetUpdate.getAndSet(false)) return
         if (offset >= 0) _restoreCharOffset.value = offset
+    }
+
+    /** Called by JS after every page turn and slider navigation with the sentence index at top. */
+    fun onCurrentSentence(si: Int) {
+        if (si >= 0) _currentSentenceIndex.value = si
     }
 
     /**
