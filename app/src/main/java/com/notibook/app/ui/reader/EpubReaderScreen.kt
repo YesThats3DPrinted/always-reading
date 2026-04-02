@@ -472,8 +472,19 @@ fun EpubReaderScreen(
                         val targetSi = (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
                         webViewRef.value?.evaluateJavascript("""
                             (function(){
-                                var el = document.querySelector('[data-si="$targetSi"]');
-                                if (!el) return;
+                                var targetSi = $targetSi;
+                                var els = document.querySelectorAll('[data-si]');
+                                if (els.length === 0) return;
+                                // Binary search: find the last marker with data-si <= targetSi
+                                var lo = 0, hi = els.length - 1, el = els[0];
+                                while (lo <= hi) {
+                                    var mid = (lo + hi) >> 1;
+                                    if (parseInt(els[mid].dataset.si) <= targetSi) {
+                                        el = els[mid]; lo = mid + 1;
+                                    } else {
+                                        hi = mid - 1;
+                                    }
+                                }
                                 var r = document.createRange();
                                 r.setStart(document.body, 0);
                                 r.setEnd(el, 0);
@@ -767,9 +778,9 @@ private fun ReaderContent(
                 }
                 if (chapters.length > 0) NotiBook.onChapterVisible(currentChapter());
                 setTimeout(function(){
-                    var offset = window.__getCharOffset ? window.__getCharOffset(w * 0.5, 60) : 0;
+                    var offset = window.__getCharOffset ? window.__getCharOffset(1, 1) : 0;
                     NotiBook.onCharOffset(offset);
-                    var si = window.__getSentenceAtTop ? window.__getSentenceAtTop(w * 0.5, 60) : 0;
+                    var si = window.__getSentenceAtTop ? window.__getSentenceAtTop(1, 1) : 0;
                     NotiBook.onCurrentSentence(si);
                 }, 200);
             }
