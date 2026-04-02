@@ -472,8 +472,9 @@ fun EpubReaderScreen(
                         sliderDragValue = v
                     },
                     onValueChangeFinished = {
-                        sliderDragging = false
                         val targetSi = (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
+                        vm.onCurrentSentence(targetSi) // optimistic update — holds thumb in place
+                        sliderDragging = false
                         webViewRef.value?.evaluateJavascript("""
                             (function(){
                                 var targetSi = $targetSi;
