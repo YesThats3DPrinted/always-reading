@@ -16,7 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
-class NotiBookApp : Application() {
+class AlwaysReadingApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
     val repository: BookRepository by lazy {
@@ -41,7 +41,7 @@ class NotiBookApp : Application() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
-            "NotiBook Reading",
+            "Always Reading",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             description = "Persistent sentence-by-sentence reading notifications"
@@ -61,7 +61,7 @@ class NotiBookApp : Application() {
             val activeBooks = repository.getActiveBooks()
             for (book in activeBooks) {
                 val sentence = repository.getSentence(book.id, book.currentIndex) ?: continue
-                NotificationHelper.show(this@NotiBookApp, book, sentence)
+                NotificationHelper.show(this@AlwaysReadingApp, book, sentence)
             }
         }
     }

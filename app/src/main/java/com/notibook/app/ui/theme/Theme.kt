@@ -7,7 +7,7 @@ import androidx.compose.runtime.Composable
 private val LightColors = lightColorScheme()
 
 @Composable
-fun NotiBookTheme(content: @Composable () -> Unit) {
+fun AlwaysReadingTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = LightColors,
         content = content

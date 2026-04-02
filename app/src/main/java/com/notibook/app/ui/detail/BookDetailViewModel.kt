@@ -3,7 +3,7 @@ package com.notibook.app.ui.detail
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import com.notibook.app.data.db.BookEntity
 import com.notibook.app.data.db.SentenceEntity
 import com.notibook.app.notification.NotificationHelper
@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
 
 class BookDetailViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as NotiBookApp).repository
+    private val repo = (application as AlwaysReadingApp).repository
 
     private val _bookId = MutableStateFlow(-1L)
 
@@ -41,7 +41,7 @@ class BookDetailViewModel(application: Application) : AndroidViewModel(applicati
         val b = book.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
             repo.updateNotificationActive(b.id, enable)
-            val ctx = getApplication<NotiBookApp>()
+            val ctx = getApplication<AlwaysReadingApp>()
             if (enable) {
                 val sentence = repo.getSentence(b.id, b.currentIndex) ?: return@launch
                 NotificationHelper.show(ctx, b, sentence)

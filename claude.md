@@ -1,8 +1,8 @@
-# NotiBook — Android Ebook Reader via Persistent Notifications
+# Always Reading — Android Ebook Reader via Persistent Notifications
 
 ## What This App Does
 
-NotiBook lets you read books passively throughout your day. Instead of sitting down and opening a reading app, you get one sentence at a time delivered as a persistent notification. You can tap the arrows in the notification to go forward or back, and tap the title to open the full in-app reader whenever you want to read more actively.
+Always Reading lets you read books passively throughout your day. Instead of sitting down and opening a reading app, you get one sentence at a time delivered as a persistent notification. You can tap the arrows in the notification to go forward or back, and tap the title to open the full in-app reader whenever you want to read more actively.
 
 **Supported formats:** EPUB, TXT
 **Target devices:** Android 7+ (API 24+)
@@ -191,12 +191,12 @@ One row per sentence. Key fields:
 Shows all imported books as cards. Tapping a card opens the reader, but only if `!book.isParsing` — cards are non-clickable while parsing (the progress bar is already visible as feedback). Long-press enters selection mode for deletion.
 
 **`AppNavigation.kt`**
-Defines the nav graph. Also observes `pendingOpenBookId` on `NotiBookApp` — when the user taps a notification while the app is already open, this triggers navigation to the correct book without restarting the activity.
+Defines the nav graph. Also observes `pendingOpenBookId` on `AlwaysReadingApp` — when the user taps a notification while the app is already open, this triggers navigation to the correct book without restarting the activity.
 
 **`MainActivity.kt`**
 Reads `bookId` from the intent extras set by notification taps. Passes it to `AppNavigation` as the initial book to open. Also handles `onNewIntent` for the case where the app is already open and another notification is tapped.
 
-**`NotiBookApp.kt`**
+**`AlwaysReadingApp.kt`**
 Application class. Creates the notification channel, calls `restoreActiveNotifications()` on startup, and exposes `appScope` — a coroutine scope that survives ViewModel lifecycle. Position saves on reader close use `appScope` not `viewModelScope`, because `viewModelScope` cancels the moment you navigate away.
 
 ---

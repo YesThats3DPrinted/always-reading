@@ -3,7 +3,7 @@ package com.notibook.app.ui.reader
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import com.notibook.app.data.db.SentenceEntity
 import com.notibook.app.epub.EpubCombiner
 import com.notibook.app.epub.EpubExtractor
@@ -40,7 +40,7 @@ sealed interface ReaderState {
 
 class EpubReaderViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val app   = application as NotiBookApp
+    private val app   = application as AlwaysReadingApp
     private val repo  = app.repository
     private val prefs = ReaderPreferences(application)
 

@@ -10,14 +10,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import com.notibook.app.ui.library.LibraryScreen
 import com.notibook.app.ui.reader.EpubReaderScreen
 
 @Composable
 fun AppNavigation(startBookId: Long = -1L) {
     val nav = rememberNavController()
-    val app = LocalContext.current.applicationContext as NotiBookApp
+    val app = LocalContext.current.applicationContext as AlwaysReadingApp
 
     // Navigate to a specific book when the app is launched from a notification
     LaunchedEffect(startBookId) {

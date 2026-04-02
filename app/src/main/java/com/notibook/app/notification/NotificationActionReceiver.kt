@@ -3,7 +3,7 @@ package com.notibook.app.notification
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,7 +36,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
     }
 
     private suspend fun handle(context: Context, action: String?, bookId: Long) {
-        val repo = (context.applicationContext as NotiBookApp).repository
+        val repo = (context.applicationContext as AlwaysReadingApp).repository
         val book = repo.getBook(bookId) ?: return
 
         when (action) {

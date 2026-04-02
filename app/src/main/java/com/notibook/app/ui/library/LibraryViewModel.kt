@@ -8,7 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import com.notibook.app.data.db.BookEntity
 import com.notibook.app.notification.NotificationHelper
 import com.notibook.app.parsing.ParseWorker
@@ -24,7 +24,7 @@ import java.io.File
 
 class LibraryViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as NotiBookApp).repository
+    private val repo = (application as AlwaysReadingApp).repository
 
     val books: StateFlow<List<BookEntity>> = repo.getAllBooks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -86,7 +86,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
     fun importBook(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val context = getApplication<NotiBookApp>()
+            val context = getApplication<AlwaysReadingApp>()
             val resolver = context.contentResolver
 
             val fileName = resolver.query(uri, null, null, null, null)?.use { cursor ->

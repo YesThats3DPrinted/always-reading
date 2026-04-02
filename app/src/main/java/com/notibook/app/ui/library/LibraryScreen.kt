@@ -82,7 +82,7 @@ fun LibraryScreen(
                 )
             } else {
                 TopAppBar(
-                    title  = { Text("NotiBook") },
+                    title  = { Text("Always Reading") },
                     colors = topBarColors
                 )
             }

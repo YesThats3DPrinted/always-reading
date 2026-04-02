@@ -3,7 +3,7 @@ package com.notibook.app.parsing
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.notibook.app.NotiBookApp
+import com.notibook.app.AlwaysReadingApp
 import com.notibook.app.data.db.SentenceEntity
 import java.io.File
 
@@ -21,7 +21,7 @@ class ParseWorker(
         val bookId = inputData.getLong(KEY_BOOK_ID, -1L)
         if (bookId == -1L) return Result.failure()
 
-        val repo = (context.applicationContext as NotiBookApp).repository
+        val repo = (context.applicationContext as AlwaysReadingApp).repository
         val book = repo.getBook(bookId) ?: return Result.failure()
 
         return try {

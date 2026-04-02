@@ -3,7 +3,32 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Left chevron ‹ -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,20C35.2,20 20,35.2 20,54s15.2,34 34,34 34,-15.2 34,-34S72.8,20 54,20zM44,38h10v20l-5,-3 -5,3V38zM34,70V42l4,0v24h32V42h4v28H34z" />
+        android:pathData="M22.5,42.75 L11.25,54 L22.5,65.25"
+        android:fillColor="#00000000"
+        android:strokeColor="#E0E0E0"
+        android:strokeWidth="6.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- Infinity sign ∞ (scaled 4.5× from 24dp notification icon) -->
+    <path
+        android:pathData="M54,54 C54,45.9 48.15,42.75 42.75,42.75 C37.35,42.75 31.5,45.9 31.5,54 C31.5,62.1 37.35,65.25 42.75,65.25 C48.15,65.25 54,62.1 54,54 C54,45.9 59.85,42.75 65.25,42.75 C70.65,42.75 76.5,45.9 76.5,54 C76.5,62.1 70.65,65.25 65.25,65.25 C59.85,65.25 54,62.1 54,54 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#E0E0E0"
+        android:strokeWidth="6.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- Right chevron › -->
+    <path
+        android:pathData="M85.5,42.75 L96.75,54 L85.5,65.25"
+        android:fillColor="#00000000"
+        android:strokeColor="#E0E0E0"
+        android:strokeWidth="6.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
 </vector>

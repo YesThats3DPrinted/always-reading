@@ -7,7 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.notibook.app.notification.NotificationActionReceiver
 import com.notibook.app.ui.navigation.AppNavigation
-import com.notibook.app.ui.theme.NotiBookTheme
+import com.notibook.app.ui.theme.AlwaysReadingTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -16,7 +16,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val startBookId = intent.getLongExtra(NotificationActionReceiver.EXTRA_BOOK_ID, -1L)
         setContent {
-            NotiBookTheme {
+            AlwaysReadingTheme {
                 AppNavigation(startBookId = startBookId)
             }
         }
@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         val bookId = intent.getLongExtra(NotificationActionReceiver.EXTRA_BOOK_ID, -1L)
         if (bookId != -1L) {
-            (application as NotiBookApp).pendingOpenBookId.value = bookId
+            (application as AlwaysReadingApp).pendingOpenBookId.value = bookId
         }
     }
 }

@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Notification toggle icon: ‹ [___] ›
-    Left chevron, outlined rounded rectangle, right chevron.
-    No outer card — the three elements stand alone.
-    Tinted by Compose: primary colour (purple) when notification is on, grey when off.
+    Notification toggle icon: ‹ ∞ ›
+    Left chevron, infinity sign, right chevron.
+    Tinted by Compose: TEXT_COLOR when on, dimmed when off.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -20,12 +19,14 @@
         android:strokeLineCap="round"
         android:strokeLineJoin="round"/>
 
-    <!-- Centre outlined rectangle [___] -->
+    <!-- Infinity sign ∞ -->
     <path
-        android:pathData="M9.7,9 L14.3,9 A1.2,1.2 0 0,1 15.5,10.2 L15.5,13.8 A1.2,1.2 0 0,1 14.3,15 L9.7,15 A1.2,1.2 0 0,1 8.5,13.8 L8.5,10.2 A1.2,1.2 0 0,1 9.7,9 Z"
+        android:pathData="M12,12 C12,10.2 10.7,9.5 9.5,9.5 C8.3,9.5 7,10.2 7,12 C7,13.8 8.3,14.5 9.5,14.5 C10.7,14.5 12,13.8 12,12 C12,10.2 13.3,9.5 14.5,9.5 C15.7,9.5 17,10.2 17,12 C17,13.8 15.7,14.5 14.5,14.5 C13.3,14.5 12,13.8 12,12 Z"
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="1.5"/>
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
 
     <!-- Right chevron › -->
     <path

@@ -8,11 +8,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
-        android:name=".NotiBookApp"
+        android:name=".AlwaysReadingApp"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:theme="@style/Theme.NotiBook"
+        android:theme="@style/Theme.AlwaysReading"
         android:allowBackup="true"
         android:supportsRtl="true">
 
