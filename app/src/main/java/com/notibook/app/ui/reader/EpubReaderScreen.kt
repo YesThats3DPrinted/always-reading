@@ -80,13 +80,11 @@ fun EpubReaderScreen(
     // Scrubber drag state — tracks thumb during drag without changing currentPageIndex
     var sliderDragging  by remember { mutableStateOf(false) }
     var sliderDragValue by remember { mutableFloatStateOf(0f) }
-    // After the user releases the slider, lock the counter to the sentence they chose.
-    // Cleared when a new drag starts so the live preview resumes immediately.
-    // This is ONLY for the counter label — sliderDragValue (thumb) is unaffected.
+    // Holds the user's chosen sentence after slider release so the counter doesn't
+    // jump to the actual top-of-page sentence on navigation. Cleared on next drag.
     var lockedDisplaySi by remember { mutableStateOf<Int?>(null) }
 
-    // Keep sliderDragValue in sync with actual position when not actively dragging.
-    // This is the ONLY place sliderDragValue is written outside of the drag gesture.
+    // Syncs sliderDragValue to the confirmed page position when not dragging.
     LaunchedEffect(currentSentenceIndex, totalSentences) {
         if (!sliderDragging && totalSentences > 1) {
             sliderDragValue = currentSentenceIndex.toFloat() / (totalSentences - 1)
@@ -454,15 +452,10 @@ fun EpubReaderScreen(
                     .background(BAR_COLOR)
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                // Sentence counter label.
-                // During drag: live preview from sliderDragValue.
-                // After release: locked to the user's chosen sentence (lockedDisplaySi) so
-                //   the counter doesn't jump to the actual top-of-page sentence on navigation.
-                // Otherwise: the confirmed currentSentenceIndex from the last page turn.
                 val displayIndex = when {
-                    sliderDragging   -> (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
+                    sliderDragging          -> (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
                     lockedDisplaySi != null -> lockedDisplaySi!!
-                    else             -> currentSentenceIndex
+                    else                    -> currentSentenceIndex
                 }
                 val sentenceDisplay = if (totalSentences > 0)
                     "Sentence ${"%,d".format(displayIndex + 1)} of ${"%,d".format(totalSentences)}"
@@ -478,18 +471,16 @@ fun EpubReaderScreen(
 
                 // Sentence scrubber — position and navigation are sentence-index based,
                 // no page count or scrollWidth involved.
-                // sliderDragValue is the single source of truth: the LaunchedEffect above
-                // syncs it from currentSentenceIndex when not dragging.
                 Slider(
                     value = sliderDragValue,
                     onValueChange = { v ->
-                        lockedDisplaySi = null   // clear lock so live preview shows during drag
+                        lockedDisplaySi = null
                         sliderDragging  = true
                         sliderDragValue = v
                     },
                     onValueChangeFinished = {
                         val targetSi = (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
-                        lockedDisplaySi = targetSi  // hold counter at chosen sentence after release
+                        lockedDisplaySi = targetSi
                         sliderDragging = false
                         webViewRef.value?.evaluateJavascript("""
                             (function(){
