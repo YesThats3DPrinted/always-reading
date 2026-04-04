@@ -37,6 +37,7 @@ object EpubCombiner {
         figure { margin: 0; padding: 0; }
         table { width: 100%; }
         pre, code { white-space: pre-wrap; }
+        [id^="chapter-"]:not(#chapter-0) { break-before: column !important; page-break-before: always !important; }
     """.trimIndent().replace("\n", " ")
 
     suspend fun buildCombinedHtml(

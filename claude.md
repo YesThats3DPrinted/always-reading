@@ -154,6 +154,41 @@ Intercepts link taps inside the book, finds the target element (by spine index +
 **Bottom bar:**
 Sentence counter label ("Sentence X of Y") above a horizontal scrubber slider. The counter updates live on every page turn and slider drag via `onCurrentSentence`. The slider navigates by CSS column page; the label shows sentence position independently.
 
+**Slider state and the `lockedDisplaySi` pattern:**
+
+Three Compose state variables drive the scrubber:
+
+```kotlin
+var sliderDragging  by remember { mutableStateOf(false) }
+var sliderDragValue by remember { mutableFloatStateOf(0f) }
+var lockedDisplaySi by remember { mutableStateOf<Int?>(null) }
+```
+
+`sliderDragValue` is synced to the confirmed page position in a `LaunchedEffect` **only when not dragging**:
+```kotlin
+LaunchedEffect(currentSentenceIndex, totalSentences) {
+    if (!sliderDragging && totalSentences > 1) {
+        sliderDragValue = currentSentenceIndex.toFloat() / (totalSentences - 1)
+    }
+}
+```
+
+`lockedDisplaySi` holds the user's chosen sentence after slider release so the counter does not jump to the actual top-of-page value returned by JS ~300ms later. It is set in `onValueChangeFinished` and cleared at the start of the next drag in `onValueChange`.
+
+The counter:
+```kotlin
+val displayIndex = when {
+    sliderDragging          -> (sliderDragValue * max(1, totalSentences - 1)).roundToInt()
+    lockedDisplaySi != null -> lockedDisplaySi!!
+    else                    -> currentSentenceIndex
+}
+```
+
+**Critical rule — do NOT add extra `remember` blocks near the slider.**
+Empirically confirmed via logcat: adding `remember` blocks (e.g. for plain `intArrayOf` or `mutableIntStateOf` refs) before the Slider composable changes Compose's internal slot table layout. This causes Compose to recreate the Slider node during recomposition mid-gesture instead of updating it in place, losing the active gesture state. The Slider then misclassifies the in-progress drag as a tap — `onValueChangeFinished` fires ~14ms after `onValueChange` (instead of 1–4 seconds later on genuine finger lift), clamping the slider at the touch-down point.
+
+Keep `LaunchedEffect` body minimal: one `sliderDragValue` write, nothing else. All display-only state (`lockedDisplaySi`) must be `mutableStateOf` written in the gesture callbacks (`onValueChange`, `onValueChangeFinished`), not in `LaunchedEffect`.
+
 **JS bridge methods:**
 - `onPrevPage()`, `onNextPage()`, `onCenterTap()`, `onChapterVisible(idx)`, `onScrollToPage(page)`, `onInternalLink(href)` — standard navigation
 - `onCharOffset(offset: Long)` — called after page turns and after restore; updates the ViewModel's char offset anchor

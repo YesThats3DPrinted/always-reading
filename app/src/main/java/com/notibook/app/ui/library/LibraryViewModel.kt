@@ -75,6 +75,11 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 repo.updateNotificationActive(book.id, false)
                 NotificationHelper.hide(ctx, book.id)
             } else {
+                // Enforce one notification at a time — deactivate all others first
+                for (other in repo.getActiveBooks()) {
+                    repo.updateNotificationActive(other.id, false)
+                    NotificationHelper.hide(ctx, other.id)
+                }
                 val sentence = repo.getSentence(book.id, book.currentIndex) ?: return@launch
                 repo.updateNotificationActive(book.id, true)
                 NotificationHelper.show(ctx, book, sentence)

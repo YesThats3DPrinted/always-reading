@@ -110,6 +110,15 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                 _totalSentences.value = book?.totalSentences ?: 0
             }
         }
+        // Hide this book's notification while the reader is open.
+        // notificationActive stays true in DB so onClose() restores it automatically.
+        val ctx = getApplication<android.app.Application>()
+        viewModelScope.launch {
+            val book = repo.getBook(bookId) ?: return@launch
+            if (book.notificationActive) {
+                NotificationHelper.hide(ctx, bookId)
+            }
+        }
     }
 
     private suspend fun loadReader(bookId: Long) {
@@ -333,6 +342,13 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         app.appScope.launch {
             val book = repo.getBook(capturedBookId) ?: return@launch
             if (enabled) {
+                // Enforce one notification at a time — deactivate all others first
+                for (other in repo.getActiveBooks()) {
+                    if (other.id != capturedBookId) {
+                        repo.updateNotificationActive(other.id, false)
+                        NotificationHelper.hide(ctx, other.id)
+                    }
+                }
                 val sentence = repo.getSentence(capturedBookId, book.currentIndex) ?: return@launch
                 repo.updateNotificationActive(capturedBookId, true)
                 NotificationHelper.show(ctx, book, sentence)

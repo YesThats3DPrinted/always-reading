@@ -18,14 +18,17 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -378,15 +381,12 @@ fun EpubReaderScreen(
                         }
                     }
 
-                    // Font size buttons — grouped close together
-                    TextButton(
-                        onClick        = {
-                            if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
-                                fontSize -= 2; vm.setFontSize(fontSize)
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
-                    ) {
+                    // Font size buttons
+                    IconButton(onClick = {
+                        if (fontSize > ReaderPreferences.FONT_SIZE_RANGE.first) {
+                            fontSize -= 2; vm.setFontSize(fontSize)
+                        }
+                    }) {
                         Text(
                             "A−",
                             color = TEXT_COLOR.copy(
@@ -395,14 +395,11 @@ fun EpubReaderScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    TextButton(
-                        onClick        = {
-                            if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
-                                fontSize += 2; vm.setFontSize(fontSize)
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
-                    ) {
+                    IconButton(onClick = {
+                        if (fontSize < ReaderPreferences.FONT_SIZE_RANGE.last) {
+                            fontSize += 2; vm.setFontSize(fontSize)
+                        }
+                    }) {
                         Text(
                             "A+",
                             color = TEXT_COLOR.copy(
@@ -414,26 +411,25 @@ fun EpubReaderScreen(
 
                     Spacer(modifier = Modifier.weight(1f))
 
-                    // Notification toggle — full TEXT_COLOR when on, dim when off
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (notificationActive)
-                                    TEXT_COLOR.copy(alpha = 0.15f)
-                                else
-                                    Color.Transparent
+                    // Notification toggle
+                    IconButton(onClick = { requestNotificationToggle(!notificationActive) }) {
+                        AnimatedContent(
+                            targetState    = notificationActive,
+                            transitionSpec = {
+                                fadeIn(tween(350)) togetherWith fadeOut(tween(350))
+                            },
+                            label = "notif_icon_fade"
+                        ) { active ->
+                            Icon(
+                                painter            = painterResource(
+                                    if (active) R.drawable.ic_notification_reader_on
+                                    else        R.drawable.ic_notification_reader_off
+                                ),
+                                contentDescription = if (active) "Disable notification" else "Enable notification",
+                                modifier           = Modifier.size(22.dp),
+                                tint               = Color.Unspecified
                             )
-                            .clickable { requestNotificationToggle(!notificationActive) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            painter            = painterResource(R.drawable.ic_notification_reader),
-                            contentDescription = if (notificationActive) "Disable notification" else "Enable notification",
-                            modifier           = Modifier.size(22.dp),
-                            tint               = if (notificationActive) TEXT_COLOR else TEXT_COLOR.copy(alpha = 0.35f)
-                        )
+                        }
                     }
                 }
             }
@@ -561,6 +557,7 @@ private fun ReaderContent(
         append(" figure { margin: 0 !important; padding: 0 !important; }")
         append(" table { width: 100% !important; }")
         append(" pre, code { white-space: pre-wrap !important; }")
+        append(" [id^=\"chapter-\"]:not(#chapter-0) { break-before: column !important; page-break-before: always !important; }")
     }
 
     fun buildJs(w: Int, h: Int) = """

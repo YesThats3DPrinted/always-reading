@@ -4,12 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +14,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -237,22 +238,24 @@ private fun BookCard(
             }
 
             if (!isSelectionMode && !book.isParsing) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (book.notificationActive) Color(0xFF404040) else Color.Transparent
+                IconButton(onClick = { onNotificationToggle() }) {
+                    AnimatedContent(
+                        targetState    = book.notificationActive,
+                        transitionSpec = {
+                            fadeIn(tween(350)) togetherWith fadeOut(tween(350))
+                        },
+                        label = "notif_icon_fade"
+                    ) { active ->
+                        Icon(
+                            painter            = painterResource(
+                                if (active) R.drawable.ic_notification_reader_on
+                                else        R.drawable.ic_notification_reader_off
+                            ),
+                            contentDescription = if (active) "Disable notification" else "Enable notification",
+                            modifier           = Modifier.size(26.dp),
+                            tint               = Color.Unspecified
                         )
-                        .clickable { onNotificationToggle() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        painter            = painterResource(R.drawable.ic_notification_reader),
-                        contentDescription = if (book.notificationActive) "Disable notification" else "Enable notification",
-                        modifier           = Modifier.size(26.dp),
-                        tint               = if (book.notificationActive) TEXT_COLOR else DIM_COLOR.copy(alpha = 0.5f)
-                    )
+                    }
                 }
             }
         }
