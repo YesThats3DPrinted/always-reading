@@ -87,9 +87,9 @@ fun EpubReaderScreen(
     // jump to the actual top-of-page sentence on navigation. Cleared on next drag.
     var lockedDisplaySi by remember { mutableStateOf<Int?>(null) }
 
-    // Syncs sliderDragValue to the confirmed page position when not dragging.
+    // Syncs sliderDragValue to the confirmed page position when not dragging and not locked.
     LaunchedEffect(currentSentenceIndex, totalSentences) {
-        if (!sliderDragging && totalSentences > 1) {
+        if (!sliderDragging && lockedDisplaySi == null && totalSentences > 1) {
             sliderDragValue = currentSentenceIndex.toFloat() / (totalSentences - 1)
         }
     }
@@ -180,8 +180,18 @@ fun EpubReaderScreen(
             wv.evaluateJavascript("""
                 (function(){
                     var w=window.__colW||window.innerWidth;
-                    var charOffset=window.__getCharOffset?window.__getCharOffset(w*0.5,60):0;
+                    var charOffset=window.__getCharOffset?window.__getCharOffset(w*0.3,10):0;
                     var si=window.__getSentenceAtTop?window.__getSentenceAtTop(1,1):0;
+                    var bodyText=document.body.textContent;
+                    var normLen=0,rawIdx=0,inWs=false;
+                    while(rawIdx<bodyText.length&&normLen<charOffset){var isWs=/\s/.test(bodyText[rawIdx]);if(isWs){if(!inWs){normLen++;inWs=true;}}else{normLen++;inWs=false;}rawIdx++;}
+                    var snippet=bodyText.substring(rawIdx,rawIdx+20).replace(/\s+/g,' ');
+                    var closeRectLeft='n/a';
+                    try{
+                        var caret=document.caretRangeFromPoint(w*0.3,10);
+                        if(caret){var cr=document.createRange();cr.setStart(caret.startContainer,caret.startOffset);cr.setEnd(caret.startContainer,Math.min(caret.startOffset+1,caret.startContainer.textContent.length));var cRects=cr.getClientRects();if(cRects&&cRects.length>0)closeRectLeft=cRects[0].left+(window.__currentPage*(window.__colW||w));}
+                    }catch(e){}
+                    NotiBook.debugReport('CLOSE: page='+window.__currentPage+' charOffset='+charOffset+' si='+si+' rawIdx='+rawIdx+' closeRectLeft='+closeRectLeft+' colW='+(window.__colW||w)+' text="'+snippet+'"');
                     return ''+charOffset+'|'+si;
                 })()
             """.trimIndent()) { raw ->
@@ -229,8 +239,8 @@ fun EpubReaderScreen(
                 restoreCurrentIndex  = s.restoreCurrentIndex,
                 spineItems           = s.spineItems,
                 fontSize             = fontSize,
-                onPrevPage           = { vm.onPrevPage() },
-                onNextPage           = { vm.onNextPage() },
+                onPrevPage           = { lockedDisplaySi = null; vm.onPrevPage() },
+                onNextPage           = { lockedDisplaySi = null; vm.onNextPage() },
                 onCenterTap          = { vm.onCenterTap() },
                 onChapterVisible     = { idx -> vm.onChapterVisible(idx) },
                 onScrollToPage       = { page -> vm.onScrollToPage(page) },
@@ -645,6 +655,7 @@ private fun ReaderContent(
                             // until after goToPage() sets the final transform.
                             document.body.style.setProperty('transition', 'none', 'important');
                             document.body.style.transform = 'translateX(0)';
+                            if (window.__fixImages) window.__fixImages();
                             var range = document.createRange();
                             var clampedOff = Math.min(localOff, len);
                             range.setStart(tn, clampedOff);
@@ -657,6 +668,8 @@ private fun ReaderContent(
                             } else {
                                 page = Math.max(0, Math.floor((tn.parentElement ? tn.parentElement.offsetLeft : 0) / cw2));
                             }
+                            var snippet2=tn.textContent.substring(localOff,localOff+20).replace(/\s+/g,' ');
+                            NotiBook.debugReport('RESTORE: targetOffset='+targetOffset+' rawIdx='+rawIdx+' rectLeft='+(rects&&rects.length>0?rects[0].left:'none')+' colW='+cw2+' page='+page+' scrollLeft='+document.body.scrollLeft+' text="'+snippet2+'"');
                             goToPage(page);
                             NotiBook.onScrollToPage(page);
                             return;
@@ -777,6 +790,7 @@ private fun ReaderContent(
                 if (document.body.scrollWidth <= w + 5 && (targetCharOffset > 0 || targetSi > 0)) {
                     setTimeout(tryRestore, 300); return;
                 }
+                NotiBook.debugReport('OPEN: targetCharOffset='+targetCharOffset+' targetSi='+targetSi+' scrollWidth='+document.body.scrollWidth+' colW='+(window.__colW||w));
                 if (targetCharOffset >= 0) {
                     window.__restoreByCharOffset(targetCharOffset);
                 } else if (targetSi > 0) {
