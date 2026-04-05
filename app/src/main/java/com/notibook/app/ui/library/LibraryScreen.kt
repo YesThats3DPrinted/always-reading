@@ -6,6 +6,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -73,8 +76,8 @@ fun LibraryScreen(
                     title   = { Text("${selectedIds.size} selected") },
                     colors  = topBarColors,
                     actions = {
-                        TextButton(onClick = { vm.selectAll() }) {
-                            Text("Select all", color = TEXT_COLOR)
+                        IconButton(onClick = { vm.selectAll() }) {
+                            Icon(Icons.Filled.SelectAll, contentDescription = "Select all", tint = TEXT_COLOR)
                         }
                         IconButton(onClick = { vm.deleteSelected() }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete selected", tint = TEXT_COLOR)
@@ -93,7 +96,8 @@ fun LibraryScreen(
                 FloatingActionButton(
                     onClick          = { filePicker.launch(arrayOf("application/epub+zip", "text/plain", "*/*")) },
                     containerColor   = CARD_COLOR,
-                    contentColor     = TEXT_COLOR
+                    contentColor     = TEXT_COLOR,
+                    shape            = androidx.compose.foundation.shape.CircleShape
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Import book")
                 }
@@ -176,16 +180,20 @@ private fun BookCard(
             }
 
             // Cover thumbnail
+            val coverShape = RoundedCornerShape(12.dp)
             if (book.coverPath != null) {
                 AsyncImage(
                     model              = File(book.coverPath),
                     contentDescription = "Cover of ${book.title}",
                     contentScale       = ContentScale.Crop,
-                    modifier           = Modifier.size(width = 64.dp, height = 90.dp)
+                    modifier           = Modifier
+                        .size(width = 64.dp, height = 90.dp)
+                        .clip(coverShape)
                 )
             } else {
                 Surface(
                     modifier = Modifier.size(width = 64.dp, height = 90.dp),
+                    shape    = coverShape,
                     color    = Color(0xFF404040)
                 ) {}
             }

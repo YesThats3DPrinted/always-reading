@@ -1,22 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Circle background + ripple for arrow buttons in the notification.
-     The mask layer is required — without it RemoteViews breaks touch dispatch.
+<!-- Pill background + ripple for the title bar in the notification.
      Ripple color #33FFFFFF matches Material3 IconButton on dark backgrounds.
-     Inset shrinks the visible circle to ~70% of the touch target
+     Inset shrinks the visible pill to ~70% of the row height
      without reducing the tappable area.
-     android:shape="rectangle" with <corners android:radius="8dp" /> was the old style. -->
+     12dp corners matches Material3 card radius. -->
 <ripple xmlns:android="http://schemas.android.com/apk/res/android"
     android:color="#33FFFFFF">
 
-    <!-- Normal state: inset semi-transparent circle -->
+    <!-- Normal state: inset semi-transparent pill -->
     <item>
         <inset
-            android:insetLeft="6dp"
             android:insetTop="6dp"
-            android:insetRight="6dp"
             android:insetBottom="6dp">
-            <shape android:shape="oval">
+            <shape android:shape="rectangle">
                 <solid android:color="#22808080" />
+                <corners android:radius="12dp" />
             </shape>
         </inset>
     </item>
@@ -24,12 +22,11 @@
     <!-- Mask: required for RemoteViews touch dispatch AND ripple clipping -->
     <item android:id="@android:id/mask">
         <inset
-            android:insetLeft="6dp"
             android:insetTop="6dp"
-            android:insetRight="6dp"
             android:insetBottom="6dp">
-            <shape android:shape="oval">
+            <shape android:shape="rectangle">
                 <solid android:color="#FFFFFFFF" />
+                <corners android:radius="12dp" />
             </shape>
         </inset>
     </item>

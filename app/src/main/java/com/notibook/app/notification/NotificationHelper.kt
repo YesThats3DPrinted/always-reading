@@ -78,7 +78,7 @@ object NotificationHelper {
         val expanded = buildExpandedView(context, book.id, titleText, displayText, isFirst, isLast)
 
         return NotificationCompat.Builder(context, AlwaysReadingApp.NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_book)
+            .setSmallIcon(R.drawable.ic_notification_status)
             .setContentText(displayText)
             .setCustomBigContentView(expanded)
             .setOngoing(true)
