@@ -5,14 +5,14 @@ plugins {
 }
 
 android {
-    namespace = "com.notibook.app"
+    namespace = "com.alwaysreading.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.notibook.app"
+        applicationId = "com.alwaysreading.app"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
+        targetSdk = 35
+        versionCode = 2
         versionName = "1.0"
     }
 

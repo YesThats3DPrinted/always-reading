@@ -125,7 +125,7 @@ Sets up the CSS column layout. The body is made exactly one viewport wide and ta
 - **`sentinelVisible()`** — end-of-book check. `getBoundingClientRect()` on `<span id="__nb_end">`. If that span's left edge is currently on screen, we're on the last page.
 - **Touch handling** — swipe left/right and tap left/right/center zones. Checks `sentinelVisible()` before going forward.
 - **`window.__getCharOffset(x, y)`** — counts normalized characters (whitespace collapsed with `replace(/\s+/g,' ')`) from the start of the document body to the caret at `(x, y)`. Uses `caretRangeFromPoint` + `Range.toString()`. This number is stable across font size, orientation, and viewport changes.
-- **`window.__restoreByCharOffset(targetOffset)`** — inverse of `__getCharOffset`. Scans `document.body.textContent` character-by-character simulating the same whitespace normalization to find the raw DOM offset, then uses TreeWalker to find the text node, then `getClientRects()[0].left / colW` to find the column. Calls `NotiBook.onScrollToPage(page)`.
+- **`window.__restoreByCharOffset(targetOffset)`** — inverse of `__getCharOffset`. Scans `document.body.textContent` character-by-character simulating the same whitespace normalization to find the raw DOM offset, then uses TreeWalker to find the text node, then `getClientRects()[0].left / colW` to find the column. Calls `AlwaysReading.onScrollToPage(page)`.
 - **`window.__getSentenceAtTop(x, y)`** — scans all `[data-si]` marker spans via `querySelectorAll`, finds the one with the highest sentence index whose bounding rect is on the current visible column (`rect.left` within `[-1, colW+1]`) and at or above `y`. Returns that sentence index. Used on every page turn (to update the live counter) and on close (to save the notification position). More accurate than a DOM walk-up because markers are sentence-level, not block-level.
 - **`tryRestore()`** — restores position on first load. If `readerCharOffset >= 0`, calls `__restoreByCharOffset` (last action was in-reader). If `-1`, navigates to `data-si == restoreCurrentIndex` element (last action was notification). Polls `scrollWidth > viewport` before navigating so columns are fully laid out.
 - **`fixImages()`** — sets explicit pixel dimensions on `<img>` elements. CSS % and viewport units don't work reliably inside CSS columns. Exposed as `window.__fixImages` for reinit use.
@@ -137,10 +137,10 @@ Sets up the CSS column layout. The body is made exactly one viewport wide and ta
 2. Waits 250ms (overlay is visible)
 3. Resets the body's transform to 0
 4. Calls `window.__restoreByCharOffset(charOffset)` — navigates to the saved char offset
-5. Calls `window.__fixImages()` and `NotiBook.onReady()` to hide overlay
+5. Calls `window.__fixImages()` and `AlwaysReading.onReady()` to hide overlay
 
 **`LaunchedEffect(currentPageIndex)`:**
-Animates to the new page (unless `isSkippingPageAnimation()` is true — set by JS-driven navigation). After 300ms, calls `__getCharOffset(cw*0.5, 60)` and reports via `NotiBook.onCharOffset()`.
+Animates to the new page (unless `isSkippingPageAnimation()` is true — set by JS-driven navigation). After 300ms, calls `__getCharOffset(cw*0.5, 60)` and reports via `AlwaysReading.onCharOffset()`.
 
 **`addOnLayoutChangeListener`:**
 Fires on layout changes (rotation, split screen, PiP). Threshold: any width **or** height change > 1px. The small threshold catches all real layout changes (rotation, split screen entering/exiting, divider drag) without false positives since nothing else changes the WebView dimensions.
@@ -256,7 +256,7 @@ The reader saves and restores position using a character count from the start of
 When the user taps ← or → in the notification, they're advancing through the book via the notification, not the reader. The next time the reader opens, it should show the notification's current sentence — not the old reader position. `NotificationActionReceiver` sets `readerCharOffset = -1` after each successful navigation. The reader's `tryRestore()` checks: if `-1`, navigate to `currentIndex` sentence; if `>= 0`, restore by char offset.
 
 ### Why `canonicalPath` everywhere?
-Android has `/data/user/0/com.notibook.app/` as a symlink to `/data/data/com.notibook.app/`. If you use `absolutePath` on one side and `canonicalPath` on the other, path comparisons silently fail.
+Android has `/data/user/0/com.alwaysreading.app/` as a symlink to `/data/data/com.alwaysreading.app/`. If you use `absolutePath` on one side and `canonicalPath` on the other, path comparisons silently fail.
 
 ### Why does JS own the end-of-book decision?
 The reader has no concept of "total pages" in Kotlin. The browser computes CSS columns lazily. Instead, JS checks whether `<span id="__nb_end">` is currently visible on screen via `getBoundingClientRect()` before every forward navigation. If the sentinel is on screen, we're on the last page.
@@ -268,7 +268,7 @@ The reader has no concept of "total pages" in Kotlin. The browser computes CSS c
 Prevents Android from destroying and recreating the Activity on rotation. The WebView stays loaded; we just update CSS column dimensions and restore position via `buildReinitJs`.
 
 ### Why `skipNextPageAnimation`?
-When JS calls `NotiBook.onScrollToPage(page)` (after restore, chapter jump, internal link), Kotlin updates `currentPageIndex` which triggers `LaunchedEffect`. Without the flag, `LaunchedEffect` would slide-animate to a page that JS has already positioned — causing a visible snap. The `AtomicBoolean` lets JS tell Kotlin "I already moved, skip the animation."
+When JS calls `AlwaysReading.onScrollToPage(page)` (after restore, chapter jump, internal link), Kotlin updates `currentPageIndex` which triggers `LaunchedEffect`. Without the flag, `LaunchedEffect` would slide-animate to a page that JS has already positioned — causing a visible snap. The `AtomicBoolean` lets JS tell Kotlin "I already moved, skip the animation."
 
 ---
 
@@ -292,14 +292,14 @@ JS calls `__getCharOffset(w*0.5, 60)` for the char offset, and `__getSentenceAtT
 
 ```bash
 # Build
-cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/NotiBook"
+cd "/Users/aliciavazquezmartinez/Downloads/Claude Code/Always Reading"
 ./gradlew assembleDebug
 
 # Install
 ~/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # View logs
-~/Library/Android/sdk/platform-tools/adb logcat -s NotiBook NotiBook_JS
+~/Library/Android/sdk/platform-tools/adb logcat -s AlwaysReading AlwaysReading_JS
 
 # Clean rebuild
 ./gradlew clean assembleDebug

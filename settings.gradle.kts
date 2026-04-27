@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NotiBook"
+rootProject.name = "AlwaysReading"
 include(":app")

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Always Reading — Icon Preview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #111;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 40px 48px;
+  }
+  h1 { font-size: 13px; color: #555; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 48px; }
+  .section { margin-bottom: 56px; }
+  .section-title {
+    font-size: 11px; color: #555; letter-spacing: 1.5px; text-transform: uppercase;
+    margin-bottom: 28px; padding-bottom: 10px; border-bottom: 1px solid #222;
+  }
+  .row { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+  .icon-card { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .sizes { display: flex; gap: 20px; align-items: flex-end; }
+  .size-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .bg { background: #1e1e1e; border-radius: 14px; padding: 14px; display: inline-flex; }
+  .size-label { font-size: 10px; color: #3a3a3a; }
+  .label { font-size: 11px; color: #666; text-align: center; line-height: 1.5; }
+  .divider { width: 1px; background: #1e1e1e; align-self: stretch; margin: 0 8px; }
+</style>
+</head>
+<body>
+
+<h1>Always Reading — Icon Preview</h1>
+
+<!-- ═══════════════════════════════════════════════════
+     ORIENTATION ICONS
+     - Camera notch (filled pill) = TOP
+     - Home button (small filled circle, inset) = BOTTOM
+═══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Orientation icons</div>
+  <div class="row">
+
+    <!-- Portrait Normal -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <!-- notch at top -->
+              <rect x="9.5" y="4.5" width="5" height="1.5" rx="0.75" fill="white"/>
+              <!-- small filled dot, same margin from edge as notch -->
+              <circle cx="12" cy="18.75" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="9.5" y="4.5" width="5" height="1.5" rx="0.75" fill="white"/>
+              <circle cx="12" cy="18.75" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="9.5" y="4.5" width="5" height="1.5" rx="0.75" fill="white"/>
+              <circle cx="12" cy="18.75" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Portrait<br>Normal</div>
+    </div>
+
+    <!-- Portrait Upside-Down -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <!-- notch at bottom -->
+              <rect x="9.5" y="18" width="5" height="1.5" rx="0.75" fill="white"/>
+              <!-- dot near top -->
+              <circle cx="12" cy="5.25" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="9.5" y="18" width="5" height="1.5" rx="0.75" fill="white"/>
+              <circle cx="12" cy="5.25" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="9.5" y="18" width="5" height="1.5" rx="0.75" fill="white"/>
+              <circle cx="12" cy="5.25" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Portrait<br>Upside-down</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Landscape Left (notch on left, dot on right) -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <!-- notch on left -->
+              <rect x="4.5" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <!-- dot on right, inset -->
+              <circle cx="18.75" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="4.5" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <circle cx="18.75" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="4.5" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <circle cx="18.75" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Landscape<br>Camera Left</div>
+    </div>
+
+    <!-- Landscape Right (notch on right, dot on left) -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <!-- notch on right -->
+              <rect x="18" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <!-- dot on left, inset -->
+              <circle cx="5.25" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="18" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <circle cx="5.25" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+              <rect x="18" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+              <circle cx="5.25" cy="12" r="0.75" fill="white"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Landscape<br>Camera Right</div>
+    </div>
+
+  </div>
+
+  <!-- dropdown context -->
+  <div style="margin-top: 32px;">
+    <div class="section-title" style="margin-bottom: 16px;">In context — dropdown (phone icon + direction arrow)</div>
+    <div style="background:#1e1e1e; border-radius:12px; padding: 4px 0; display:inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+
+      <!-- Portrait normal — ↑ up -->
+      <div style="display:flex; align-items:center; gap:12px; padding: 10px 20px; background:#2d2d2d; border-radius:8px 8px 0 0;">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="#BB86FC" stroke-width="1.5"/>
+          <rect x="9.5" y="4.5" width="5" height="1.5" rx="0.75" fill="#BB86FC"/>
+          <circle cx="12" cy="18.75" r="0.75" fill="#BB86FC"/>
+        </svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#BB86FC" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5"/>
+          <polyline points="7,10 12,5 17,10"/>
+        </svg>
+      </div>
+
+      <!-- Portrait upside-down — ↓ down -->
+      <div style="display:flex; align-items:center; gap:12px; padding: 10px 20px;">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+          <rect x="9.5" y="18" width="5" height="1.5" rx="0.75" fill="white"/>
+          <circle cx="12" cy="5.25" r="0.75" fill="white"/>
+        </svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <polyline points="7,14 12,19 17,14"/>
+        </svg>
+      </div>
+
+      <!-- Landscape camera left — ← left -->
+      <div style="display:flex; align-items:center; gap:12px; padding: 10px 20px;">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+          <rect x="4.5" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+          <circle cx="18.75" cy="12" r="0.75" fill="white"/>
+        </svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="19" y1="12" x2="5" y2="12"/>
+          <polyline points="10,7 5,12 10,17"/>
+        </svg>
+      </div>
+
+      <!-- Landscape camera right — → right -->
+      <div style="display:flex; align-items:center; gap:12px; padding: 10px 20px; border-radius:0 0 8px 8px;">
+        <svg width="20" height="20" viewBox="0 0 24 24">
+          <rect x="2.5" y="7" width="19" height="10" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+          <rect x="18" y="9.5" width="1.5" height="5" rx="0.75" fill="white"/>
+          <circle cx="5.25" cy="12" r="0.75" fill="white"/>
+        </svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          <polyline points="14,7 19,12 14,17"/>
+        </svg>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════
+     NOTIFICATION ICON  ‹ [___] ›
+     No bounding box — just chevrons + outlined rect
+     Both states use IDENTICAL coordinates — only color differs.
+═══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">Notification icon — no bounding box, bigger rect</div>
+  <div class="row">
+
+    <!-- Active (purple) — coords: chevrons at x=5/x=19 -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#BB86FC" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#BB86FC" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#BB86FC" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Active (on)</div>
+    </div>
+
+    <!-- Inactive (grey) — IDENTICAL coords, only color is different -->
+    <div class="icon-card">
+      <div class="sizes">
+        <div class="size-col">
+          <div class="bg">
+            <svg width="64" height="64" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#555" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">64px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="36" height="36" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#555" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">36px</div>
+        </div>
+        <div class="size-col">
+          <div class="bg">
+            <svg width="24" height="24" viewBox="0 0 24 24">
+              <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#555" stroke-width="1.5"/>
+              <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="size-label">24px</div>
+        </div>
+      </div>
+      <div class="label">Inactive (off)</div>
+    </div>
+
+  </div>
+
+  <!-- top bar context -->
+  <div style="margin-top: 32px;">
+    <div class="section-title" style="margin-bottom: 16px;">In context — reader top bar</div>
+    <div style="background: rgba(18,18,18,0.95); border-radius: 10px; padding: 8px 12px; display:inline-flex; align-items:center; gap:4px;">
+      <div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;">
+        <svg width="24" height="24" viewBox="0 0 24 24">
+          <path d="M5,9.5 L2.5,12 L5,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="8.5" y="9" width="7" height="6" rx="1.2" fill="none" stroke="#BB86FC" stroke-width="1.5"/>
+          <path d="M19,9.5 L21.5,12 L19,14.5" stroke="#BB86FC" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div style="flex:1; min-width: 80px;"></div>
+      <div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center; opacity:0.5;">
+        <svg width="24" height="24" viewBox="0 0 24 24">
+          <rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="white" stroke-width="1.5"/>
+          <rect x="9.5" y="4.5" width="5" height="1.5" rx="0.75" fill="white"/>
+          <circle cx="12" cy="19.5" r="0.75" fill="white"/>
+        </svg>
+      </div>
+      <div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center; color:#aaa; font-size:13px; opacity:0.5;">A−</div>
+      <div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center; color:#aaa; font-size:13px; opacity:0.5;">A+</div>
+      <div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center; opacity:0.5;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="1.5" stroke-linecap="round">
+          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
